@@ -2,7 +2,7 @@ name: CodeLocal CI
 
 on:
   push:
-    branches: [main, dev, go-migration]
+    branches: [main, staging, dev, go-migration]
     paths:
       - 'cmd/codelocal/**'
       - 'cmd/computerhelper/**'
@@ -18,6 +18,9 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.nvmrc'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/release-npm.yml'
+      - '.github/workflows/release-npm-beta.yml'
   pull_request:
     paths:
       - 'cmd/codelocal/**'
@@ -34,6 +37,9 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.nvmrc'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/release-npm.yml'
+      - '.github/workflows/release-npm-beta.yml'
   workflow_dispatch:
 
 jobs:

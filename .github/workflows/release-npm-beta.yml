@@ -1,0 +1,209 @@
+name: Publish CodeLocal Beta to npm
+
+on:
+  push:
+    branches: [staging]
+    paths:
+      - 'cmd/codelocal/**'
+      - 'cmd/computerhelper/**'
+      - 'cmd/computernative/**'
+      - 'cmd/release/**'
+      - 'internal/**'
+      - 'legacy/typescript-runtime/**'
+      - 'scripts/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.nvmrc'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/release-npm.yml'
+      - '.github/workflows/release-npm-beta.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: codelocal-npm-beta
+  cancel-in-progress: false
+
+jobs:
+  prepare-beta:
+    if: github.repository == 'codelocal-cloud/codelocal'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout staging source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Require staging source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/staging" ]]; then
+            echo "Beta release only accepts the staging branch, got $GITHUB_REF" >&2
+            exit 1
+          fi
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.x'
+          cache: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Verify staging source
+        run: |
+          npm run check:repo
+          npm run ci:go
+          npm run test:launcher
+
+      - name: Validate source version
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_version="$(node -p "require('./package.json').version")"
+          runtime_version="$(sed -n 's/^const Version = "\([^"]*\)"$/\1/p' internal/version/version.go)"
+          if [[ -z "$source_version" || -z "$runtime_version" ]]; then
+            echo 'Could not resolve package/runtime version.' >&2
+            exit 1
+          fi
+          if [[ "$source_version" != "$runtime_version" ]]; then
+            echo "Version mismatch: package.json=$source_version runtime=$runtime_version" >&2
+            exit 1
+          fi
+          if [[ ! "$source_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "staging source must keep a stable base version, got: $source_version" >&2
+            exit 1
+          fi
+          echo "version=$source_version" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve next beta version
+        id: release
+        shell: bash
+        env:
+          SOURCE_VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          latest="$(npm view 'codelocal@latest' version --prefer-online 2>/dev/null || true)"
+          versions="$(npm view 'codelocal' versions --json --prefer-online 2>/dev/null || printf '[]')"
+
+          version="$(
+            CODELOCAL_SOURCE_VERSION="$SOURCE_VERSION" \
+            CODELOCAL_LATEST_VERSION="$latest" \
+            CODELOCAL_PUBLISHED_VERSIONS="$versions" \
+            node <<'NODE'
+          const source = process.env.CODELOCAL_SOURCE_VERSION;
+          const latest = process.env.CODELOCAL_LATEST_VERSION;
+          let versions;
+          try {
+            versions = JSON.parse(process.env.CODELOCAL_PUBLISHED_VERSIONS || '[]');
+          } catch {
+            versions = [];
+          }
+          if (!Array.isArray(versions)) versions = versions ? [versions] : [];
+
+          const parse = (value) => {
+            const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value || '');
+            if (!match) throw new Error(`Invalid stable semver: ${value}`);
+            return match.slice(1).map(Number);
+          };
+          const compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+
+          const sourceParts = parse(source);
+          const latestParts = latest ? parse(latest) : [0, 0, 0];
+          const base = compare(sourceParts, latestParts) >= 0 ? sourceParts : latestParts;
+          const betaBase = [base[0], base[1], base[2] + 1];
+          const prefix = `${betaBase[0]}.${betaBase[1]}.${betaBase[2]}-beta.`;
+          let maxBeta = -1;
+          for (const candidate of versions) {
+            if (!candidate.startsWith(prefix)) continue;
+            const n = Number(candidate.slice(prefix.length));
+            if (Number.isInteger(n) && n > maxBeta) maxBeta = n;
+          }
+          process.stdout.write(`${prefix}${maxBeta + 1}`);
+          NODE
+          )"
+
+          bump_beta() {
+            node - "$1" <<'NODE'
+          const match = /^(\d+\.\d+\.\d+-beta\.)(\d+)$/.exec(process.argv[2]);
+          if (!match) process.exit(1);
+          process.stdout.write(`${match[1]}${Number(match[2]) + 1}`);
+          NODE
+          }
+
+          while git rev-parse -q --verify "refs/tags/codelocal-v$version" >/dev/null 2>&1 || \
+            npm view "codelocal@$version" version --prefer-online >/dev/null 2>&1; do
+            version="$(bump_beta "$version")"
+          done
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=codelocal-v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Create immutable beta release tag
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          npm version "$VERSION" --no-git-tag-version --ignore-scripts
+
+          node <<'NODE'
+          const fs = require('node:fs');
+          const version = process.env.VERSION;
+          const runtimePath = 'internal/version/version.go';
+          const runtime = fs.readFileSync(runtimePath, 'utf8');
+          const pattern = /^const Version = "[^"]*"$/m;
+          if (!pattern.test(runtime)) throw new Error('Could not update runtime version constant.');
+          fs.writeFileSync(runtimePath, runtime.replace(pattern, `const Version = "${version}"`));
+          NODE
+
+          package_version="$(node -p "require('./package.json').version")"
+          lock_version="$(node -p "require('./package-lock.json').version")"
+          lock_root_version="$(node -p "require('./package-lock.json').packages[''].version")"
+          runtime_version="$(sed -n 's/^const Version = "\([^"]*\)"$/\1/p' internal/version/version.go)"
+          if [[ "$package_version" != "$VERSION" || "$lock_version" != "$VERSION" || "$lock_root_version" != "$VERSION" || "$runtime_version" != "$VERSION" ]]; then
+            echo "Failed to materialize beta version: package=$package_version lock=$lock_version lockRoot=$lock_root_version runtime=$runtime_version expected=$VERSION" >&2
+            exit 1
+          fi
+
+          CODELOCAL_RELEASE_CHANNEL=beta npm run release:npm:prepare
+          if ! grep -Fq 'npm i -g codelocal@beta' .release/npm/README.md; then
+            echo 'Beta package README does not point users to codelocal@beta.' >&2
+            exit 1
+          fi
+
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json package-lock.json internal/version/version.go
+          git commit -m "release: codelocal v$VERSION"
+          release_sha="$(git rev-parse HEAD)"
+          git tag "$TAG" "$release_sha"
+          git push origin "refs/tags/$TAG"
+          echo "Created beta release source $TAG at $release_sha."
+
+      - name: Dispatch signed npm publisher
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh workflow run release-npm.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG" -f "release_tag=$TAG"
+          echo "Dispatched signed beta publish from $TAG."

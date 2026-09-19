@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Immutable codelocal-vX.Y.Z tag to publish. This manual entry point never reserves a new release from main.'
+        description: 'Immutable codelocal-vX.Y.Z or codelocal-vX.Y.Z-beta.N tag to publish. This manual entry point never reserves a new release from main.'
         required: true
         type: string
 
@@ -357,11 +357,17 @@ jobs:
             echo "Publish stage must run from its exact release tag: requested=$REQUESTED_TAG actual=$GITHUB_REF_TYPE/$GITHUB_REF_NAME" >&2
             exit 1
           fi
-          if [[ ! "$REQUESTED_TAG" =~ ^codelocal-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+          if [[ ! "$REQUESTED_TAG" =~ ^codelocal-v([0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?)$ ]]; then
             echo "Invalid CodeLocal release tag: $REQUESTED_TAG" >&2
             exit 1
           fi
-          echo "version=${REQUESTED_TAG#codelocal-v}" >> "$GITHUB_OUTPUT"
+          version="${REQUESTED_TAG#codelocal-v}"
+          channel="latest"
+          if [[ "$version" == *-beta.* ]]; then
+            channel="beta"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
 
       - name: Checkout immutable release source
         uses: actions/checkout@v6
@@ -429,6 +435,8 @@ jobs:
 
       - name: Build and verify release package
         if: steps.registry.outputs.published != 'true'
+        env:
+          CODELOCAL_RELEASE_CHANNEL: ${{ steps.release.outputs.channel }}
         run: npm run release:prepare
 
       - name: Download native macOS Computer workers
@@ -498,28 +506,30 @@ jobs:
         if: steps.registry.outputs.published != 'true'
         env:
           VERSION: ${{ steps.release.outputs.version }}
-        run: npm publish ./.release/npm --tag latest --access public
+          CHANNEL: ${{ steps.release.outputs.channel }}
+        run: npm publish ./.release/npm --tag "$CHANNEL" --access public
 
       - name: Verify npm registry propagation
         if: steps.registry.outputs.published != 'true'
         shell: bash
         env:
           VERSION: ${{ steps.release.outputs.version }}
+          CHANNEL: ${{ steps.release.outputs.channel }}
         run: |
           set -euo pipefail
           max_attempts=60
           for attempt in $(seq 1 "$max_attempts"); do
             published="$(npm view "codelocal@$VERSION" version --prefer-online 2>/dev/null || true)"
-            latest="$(npm view 'codelocal@latest' version --prefer-online 2>/dev/null || true)"
-            if [[ "$published" == "$VERSION" && "$latest" == "$VERSION" ]]; then
-              echo "Published codelocal@$VERSION is visible and npm latest points to $VERSION."
+            tagged="$(npm view "codelocal@$CHANNEL" version --prefer-online 2>/dev/null || true)"
+            if [[ "$published" == "$VERSION" && "$tagged" == "$VERSION" ]]; then
+              echo "Published codelocal@$VERSION is visible and npm $CHANNEL points to $VERSION."
               exit 0
             fi
-            echo "Registry propagation $attempt/$max_attempts: version=${published:-pending}, latest=${latest:-pending}"
+            echo "Registry propagation $attempt/$max_attempts: version=${published:-pending}, $CHANNEL=${tagged:-pending}"
             sleep 5
           done
 
           published="$(npm view "codelocal@$VERSION" version --prefer-online 2>/dev/null || true)"
-          latest="$(npm view 'codelocal@latest' version --prefer-online 2>/dev/null || true)"
-          echo "::error::npm publish returned success, but registry propagation did not converge within 5 minutes: expected=$VERSION version=${published:-pending} latest=${latest:-pending}."
+          tagged="$(npm view "codelocal@$CHANNEL" version --prefer-online 2>/dev/null || true)"
+          echo "::error::npm publish returned success, but registry propagation did not converge within 5 minutes: expected=$VERSION version=${published:-pending} $CHANNEL=${tagged:-pending}."
           exit 1
