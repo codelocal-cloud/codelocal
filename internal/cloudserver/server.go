@@ -304,6 +304,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/v1/devices", s.devicesResourceAPI)
 	mux.HandleFunc("GET /api/v1/workspaces", s.workspacesResourceAPI)
 	mux.HandleFunc("GET /api/v1/runtime/settings", s.runtimeSettingsResourceAPI)
+	mux.HandleFunc("GET /api/v1/decision/status", s.decisionStatusAPI)
 	mux.HandleFunc("POST /api/v1/runtime/settings/config", s.runtimeConfigMutationAPI)
 	mux.HandleFunc("POST /api/v1/runtime/settings/execution", s.runtimeExecutionModeMutationAPI)
 	mux.HandleFunc("POST /api/v1/runtime/settings/secret", s.runtimeSecretMutationAPI)

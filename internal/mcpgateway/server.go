@@ -17,6 +17,8 @@ import (
 
 	"github.com/0xmarkhydra/codelocal/internal/clientupdate"
 	"github.com/0xmarkhydra/codelocal/internal/cloud"
+	"github.com/0xmarkhydra/codelocal/internal/decision"
+	"github.com/0xmarkhydra/codelocal/internal/decisionruntime"
 	"github.com/0xmarkhydra/codelocal/internal/gateway"
 	"github.com/0xmarkhydra/codelocal/internal/oauth"
 	usagecalc "github.com/0xmarkhydra/codelocal/internal/usage"
@@ -24,16 +26,20 @@ import (
 )
 
 type Service struct {
-	Store        *cloud.Store
-	Hub          *gateway.Hub
-	Workspaces   *gateway.WorkspaceService
-	Memory       longTermMemoryStore
-	BlogMedia    BlogMediaImporter
-	Release      clientupdate.Manifest
-	mu           sync.Mutex
-	servers      map[string]*mcp.Server
-	routes       map[string]map[string]string
-	shownUpdates map[string]map[string]struct{}
+	Store                *cloud.Store
+	Hub                  *gateway.Hub
+	Workspaces           *gateway.WorkspaceService
+	Memory               longTermMemoryStore
+	BlogMedia            BlogMediaImporter
+	Release              clientupdate.Manifest
+	Decision             *decision.Engine
+	DecisionMode         decisionruntime.Mode
+	DecisionProvider     string
+	DecisionPrimaryReady bool
+	mu                   sync.Mutex
+	servers              map[string]*mcp.Server
+	routes               map[string]map[string]string
+	shownUpdates         map[string]map[string]struct{}
 
 	semanticCanaryMu    sync.Mutex
 	semanticCanaryGates map[string]semanticCanaryGateEntry
@@ -44,16 +50,21 @@ func New(store *cloud.Store, hub *gateway.Hub, workspaces *gateway.WorkspaceServ
 	if len(memories) > 0 {
 		memoryStore = memories[0]
 	}
+	decisionRuntime := decisionruntime.FromEnv()
 	return &Service{
-		Store:               store,
-		Hub:                 hub,
-		Workspaces:          workspaces,
-		Memory:              memoryStore,
-		Release:             clientupdate.ManifestFromEnv(),
-		servers:             map[string]*mcp.Server{},
-		routes:              map[string]map[string]string{},
-		shownUpdates:        map[string]map[string]struct{}{},
-		semanticCanaryGates: map[string]semanticCanaryGateEntry{},
+		Store:                store,
+		Hub:                  hub,
+		Workspaces:           workspaces,
+		Memory:               memoryStore,
+		Release:              clientupdate.ManifestFromEnv(),
+		Decision:             decisionRuntime.Engine,
+		DecisionMode:         decisionRuntime.Mode,
+		DecisionProvider:     decisionRuntime.Provider,
+		DecisionPrimaryReady: decisionRuntime.PrimaryReady,
+		servers:              map[string]*mcp.Server{},
+		routes:               map[string]map[string]string{},
+		shownUpdates:         map[string]map[string]struct{}{},
+		semanticCanaryGates:  map[string]semanticCanaryGateEntry{},
 	}
 }
 

@@ -526,6 +526,13 @@ func proxyDashboardLLMRouteStream(w http.ResponseWriter, flusher http.Flusher, s
 	allowModelFallback := dashboardChatModeFromRequest(r) == "agent"
 	r = dashboardWithLLMExecutionRoute(r, selection, allowCommunity, allowModelFallback)
 	route := dashboardLLMRouteWithContext(r.Context(), selection, allowCommunity, allowModelFallback)
+	if shadow := observeDashboardModelDecision(r.Context(), s, userID, route); shadow != nil {
+		w.Header().Set("X-CodeLocal-Decision-Mode", string(shadow.Mode))
+		w.Header().Set("X-CodeLocal-Decision-Status", shadow.Status)
+		if shadow.Candidate != "" {
+			w.Header().Set("X-CodeLocal-Decision-Model", shadow.Candidate)
+		}
+	}
 	if len(route) == 0 {
 		return dashboardLLMTarget{}, dashboardRouteError(selection, errors.New("no configured LLM route"))
 	}

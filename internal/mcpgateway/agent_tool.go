@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/0xmarkhydra/codelocal/internal/decisionruntime"
 	"github.com/0xmarkhydra/codelocal/internal/gateway"
 	"github.com/0xmarkhydra/codelocal/internal/orchestration"
 	"github.com/0xmarkhydra/codelocal/internal/taskstate"
@@ -529,6 +530,22 @@ func (s *Service) runBoundedAgent(ctx context.Context, userID string, args map[s
 	}
 	initialPlan := plan
 	shadow := prepareAgentOSV2Shadow(ctx, userID, session, workspaceKey, objective, caps, plan, currentAgentState(userID, session, workspaceKey))
+	decisionPrefs := s.decisionPreferences(ctx, userID)
+	var decisionShadow map[string]any
+	if decisionPrefs.Route {
+		decisionShadow = s.observeRouteDecision(ctx, session, workspaceKey, shadow.TaskID, objective, plan.Route)
+	}
+	var contextDecisionShadow map[string]any
+	if decisionPrefs.Context {
+		contextDecisionShadow = s.observeContextRankDecision(ctx, session, workspaceKey, shadow.TaskID, objective, resultRoot(contextResult))
+	}
+	var brainDecisionShadow map[string]any
+	if decisionPrefs.Brain {
+		brainDecisionShadow = observeBrainDecisionWithStore(ctx, s.Decision, decisionPrefs.Mode, decisionShadowEvents, session, workspaceKey, shadow.TaskID, resultRoot(contextResult))
+	}
+	toolOutputDecisionShadows := []map[string]any{}
+	reviewDecisionShadows := []map[string]any{}
+	computerDecisionShadows := []map[string]any{}
 	dirtySinceVerify := false
 	haltReason := ""
 	replanRequired := false
@@ -598,6 +615,11 @@ func (s *Service) runBoundedAgent(ctx context.Context, userID string, args map[s
 		seenFingerprints[fingerprint] = mutationEpoch
 
 		before := plan
+		if decisionPrefs.Computer {
+			if observed := observeComputerDecisionWithStore(ctx, s.Decision, decisionPrefs.Mode, decisionShadowEvents, session, workspaceKey, shadow.TaskID, operation.OperationID, forward); observed != nil {
+				computerDecisionShadows = append(computerDecisionShadows, observed)
+			}
+		}
 		started := time.Now()
 		result, _ := s.callOperationRemembering(ctx, userID, step.Tool, operation, forward, req)
 		if operation.OperationID == "terminal.run" {
@@ -605,6 +627,11 @@ func (s *Service) runBoundedAgent(ctx context.Context, userID string, args map[s
 		}
 		item.DurationMS = time.Since(started).Milliseconds()
 		lastResult = result
+		if decisionPrefs.Output {
+			if observed := observeToolOutputDecisionWithStore(ctx, s.Decision, decisionPrefs.Mode, decisionShadowEvents, session, workspaceKey, shadow.TaskID, objective, operation.OperationID, resultRoot(result)); observed != nil {
+				toolOutputDecisionShadows = append(toolOutputDecisionShadows, observed)
+			}
+		}
 		if halt, reason := resultNeedsAgentHalt(result); halt {
 			item.Status = "halted"
 			trace = append(trace, item)
@@ -630,6 +657,11 @@ func (s *Service) runBoundedAgent(ctx context.Context, userID string, args map[s
 		}
 		if operation.OperationID == "verify.changes" {
 			dirtySinceVerify = false
+			if decisionPrefs.Review {
+				if observed := observeReviewDecisionWithStore(ctx, s.Decision, decisionPrefs.Mode, decisionShadowEvents, session, workspaceKey, shadow.TaskID, state.TouchedFiles); observed != nil {
+					reviewDecisionShadows = append(reviewDecisionShadows, observed)
+				}
+			}
 		}
 		if source == "model" {
 			executedModelSteps = append(executedModelSteps, boundedAgentStep{Tool: step.Tool, Args: cloneArgs(step.Args)})
@@ -767,6 +799,27 @@ func (s *Service) runBoundedAgent(ctx context.Context, userID string, args map[s
 		payload["plan"] = plan
 		payload["efficiency"] = efficiency
 		payload["agentOSV2Shadow"] = shadowSummary
+		if decisionShadow != nil {
+			payload["decisionShadow"] = decisionShadow
+		}
+		if contextDecisionShadow != nil {
+			payload["contextDecisionShadow"] = contextDecisionShadow
+		}
+		if decisionPrefs.Mode != decisionruntime.ModeOff {
+			payload["decisionPreferences"] = decisionPrefs
+		}
+		if brainDecisionShadow != nil {
+			payload["brainDecisionShadow"] = brainDecisionShadow
+		}
+		if len(toolOutputDecisionShadows) > 0 {
+			payload["toolOutputDecisionShadows"] = toolOutputDecisionShadows
+		}
+		if len(reviewDecisionShadows) > 0 {
+			payload["reviewDecisionShadows"] = reviewDecisionShadows
+		}
+		if len(computerDecisionShadows) > 0 {
+			payload["computerDecisionShadows"] = computerDecisionShadows
+		}
 		payload["agentLoop"] = map[string]any{
 			"phase":             state.AgentPhase,
 			"iteration":         state.AgentIteration,
