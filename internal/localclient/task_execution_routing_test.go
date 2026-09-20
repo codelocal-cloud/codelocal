@@ -88,6 +88,73 @@ func TestLiveProjectMutationUsesAuthoritativeCheckout(t *testing.T) {
 	}
 }
 
+func TestLiveProjectMutationAllowsWorkspaceRootFile(t *testing.T) {
+	engine, _, _ := newMultiRepoEngine(t)
+	engine.SetTaskExecutionProvider(taskexecution.ProviderActiveCheckout)
+	if err := os.MkdirAll(filepath.Join(engine.Root, "logdaily"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	args := taskExecutionArgs("task-root-file", "session-a")
+	opts := HandleOptions{SessionID: "session-a"}
+	path := "logdaily/2026-09-20-trade-redesign-dev-integration.md"
+
+	result, err := engine.taskWriteFile(context.Background(), args, opts, path, "root workspace entry\n", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["path"] != path {
+		t.Fatalf("logical workspace path was not preserved: %#v", result)
+	}
+	data, err := os.ReadFile(filepath.Join(engine.Root, filepath.FromSlash(path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "root workspace entry\n" {
+		t.Fatalf("live project root file was not written: %q", data)
+	}
+}
+
+func TestSafeWorkspaceMutationStillRejectsWorkspaceRootFile(t *testing.T) {
+	engine, _, _ := newMultiRepoEngine(t)
+	if err := os.MkdirAll(filepath.Join(engine.Root, "logdaily"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	args := taskExecutionArgs("task-root-safe", "session-a")
+	opts := HandleOptions{SessionID: "session-a"}
+
+	_, err := engine.taskWriteFile(context.Background(), args, opts, "logdaily/entry.md", "should not write\n", "")
+	if err == nil || !strings.Contains(err.Error(), "path owned by a discovered Git repository") {
+		t.Fatalf("safe workspace root mutation should remain isolated, err=%v", err)
+	}
+}
+
+func TestLiveProjectTerminalAllowsWorkspaceRootCWD(t *testing.T) {
+	engine, _, _ := newMultiRepoEngine(t)
+	engine.SetTaskExecutionProvider(taskexecution.ProviderActiveCheckout)
+	if err := os.MkdirAll(filepath.Join(engine.Root, "logdaily"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	args := taskExecutionArgs("task-root-terminal", "session-a")
+	opts := HandleOptions{SessionID: "session-a"}
+
+	target, cwd, err := engine.taskExecutionBindingForCWD(context.Background(), args, opts, ".", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cwd != engine.Root || target.Provider != taskexecution.ProviderActiveCheckout {
+		t.Fatalf("workspace-root terminal routing mismatch: cwd=%q target=%#v", cwd, target)
+	}
+
+	_, cwd, err = engine.taskExecutionBindingForCWD(context.Background(), args, opts, "logdaily", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(engine.Root, "logdaily")
+	if cwd != want {
+		t.Fatalf("workspace directory terminal routing mismatch: got=%q want=%q", cwd, want)
+	}
+}
+
 func TestTaskBundleExpandsAcrossRepositoriesWithoutTouchingMain(t *testing.T) {
 	engine, web, auth := newMultiRepoEngine(t)
 	args := taskExecutionArgs("task-cross-repo", "session-a")

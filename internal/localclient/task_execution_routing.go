@@ -87,10 +87,15 @@ func (e *Engine) taskExecutionTargetForPath(ctx context.Context, args map[string
 	}
 	repo, repoPath, err := e.Repositories.ResolvePath(workspacePath)
 	if err != nil {
+		target := taskExecutionTarget{TaskID: taskID, OwnerID: ownerID, FS: e.FS, RepositoryPath: workspacePath}
+		if e.TaskExecutionProvider() == taskexecution.ProviderActiveCheckout {
+			target.Provider = taskexecution.ProviderActiveCheckout
+			return target, nil
+		}
 		if prepare {
 			return taskExecutionTarget{}, errors.New("task execution mutation requires a path owned by a discovered Git repository")
 		}
-		return taskExecutionTarget{TaskID: taskID, OwnerID: ownerID, FS: e.FS, RepositoryPath: workspacePath}, nil
+		return target, nil
 	}
 	bundle, ok, err := e.TaskExecutions.Store.Get(e.WorkspaceKey, taskID)
 	if err != nil {
@@ -393,6 +398,13 @@ func (e *Engine) taskExecutionBindingForCWD(ctx context.Context, args map[string
 	if taskID == "" || e.TaskExecutions == nil {
 		absolute, err := e.cwd(cwd)
 		return taskExecutionTarget{}, absolute, err
+	}
+	if cwd == "." && e.TaskExecutionProvider() == taskexecution.ProviderActiveCheckout {
+		absolute, err := e.cwd(cwd)
+		return taskExecutionTarget{
+			TaskID: taskID, OwnerID: ownerID, Provider: taskexecution.ProviderActiveCheckout,
+			FS: e.FS, RepositoryPath: ".",
+		}, absolute, err
 	}
 	if cwd != "." {
 		target, err := e.taskExecutionTargetForPath(ctx, args, opts, cwd, prepare)
