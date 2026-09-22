@@ -106,6 +106,18 @@ Under the hood CodeLocal can:
 - verify the result;
 - preserve verified Experience for future work when eligible.
 
+### Longer tasks in ChatGPT
+
+For a multi-step change, ask for the whole outcome in one request:
+
+```text
+Use CodeLocal in my selected project. Inspect the relevant code, make the change,
+run the relevant checks, and report the files changed and test results. Continue
+from any unfinished CodeLocal checkpoint while this chat turn is still active.
+```
+
+An `agent` result with `status=needs_continuation` means that one bounded group of actions ended while the task still needs work. The AI client should inspect `nextAction` and continue with another call. `status=ready` means CodeLocal's verification gate passed. The AI client controls how long its own turn runs, so CodeLocal cannot force ChatGPT to keep working after the host ends a turn. If that happens, ask it to continue the same task; the current checkout and available task context remain accessible. Approvals still require your action.
+
 ## 7. Approvals
 
 Read-only actions are generally cheaper and safer than mutations.

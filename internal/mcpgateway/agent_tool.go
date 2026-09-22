@@ -44,6 +44,22 @@ func boundedAgentResponseMode(args map[string]any) (string, error) {
 	return mode, nil
 }
 
+// A bounded call can finish its allotted steps while the user's objective still
+// needs work. Keep that state distinct from a verified completion so MCP hosts
+// know to plan the next call instead of presenting a final answer.
+func boundedAgentStatus(state taskstate.State, haltReason string, replanRequired bool) string {
+	if replanRequired {
+		return "replan_required"
+	}
+	if haltReason != "" {
+		return "halted"
+	}
+	if state.AgentPhase == "finalize" && state.QualityStatus == "ready" {
+		return "ready"
+	}
+	return "needs_continuation"
+}
+
 func parseBoundedAgentSteps(value any) ([]boundedAgentStep, error) {
 	raw, ok := value.([]any)
 	if !ok || len(raw) == 0 {
@@ -717,14 +733,7 @@ func (s *Service) runBoundedAgent(ctx context.Context, userID string, args map[s
 
 	state := currentAgentState(userID, session, workspaceKey)
 	plan = s.tenantAgentPlanFromState(ctx, userID, state, caps, project)
-	status := "completed"
-	if replanRequired {
-		status = "replan_required"
-	} else if haltReason != "" {
-		status = "halted"
-	} else if state.AgentPhase == "finalize" && state.QualityStatus == "ready" {
-		status = "ready"
-	}
+	status := boundedAgentStatus(state, haltReason, replanRequired)
 	efficiency := orchestration.EvaluateExecutionEfficiency(initialPlan, trace)
 	traceSummary := orchestration.SummarizeExecutionTrace(trace)
 	shadowSummary := finalizeAgentOSV2Shadow(shadow, status, state.QualityStatus, state.QualityScore, ops, replans, haltReason != "")
@@ -733,6 +742,7 @@ func (s *Service) runBoundedAgent(ctx context.Context, userID string, args map[s
 		"objective":         objective,
 		"workspaceKey":      workspaceKey,
 		"nextAction":        state.NextAction,
+		"continuationRequired": status == "needs_continuation",
 		"quality":           map[string]any{"score": state.QualityScore, "status": state.QualityStatus},
 		"completionAllowed": state.AgentPhase == "finalize" && state.QualityStatus == "ready",
 		"traceSummary":      traceSummary,

@@ -449,10 +449,12 @@ func compactToolDefinitions() []compactToolDef {
 		})
 	}
 
+	agent := byName["agent"]
+	agent.Description += " status=needs_continuation means the objective is unfinished; use nextAction and fresh context to plan another bounded call. Only status=ready indicates verified completion. A halted result needs its reason handled before resuming."
 	defs := []compactToolDef{
 		workspace,
 		contextDef,
-		byName["agent"],
+		agent,
 		byName["read"],
 		byName["search"],
 		byName["edit"],

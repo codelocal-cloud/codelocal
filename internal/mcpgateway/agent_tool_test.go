@@ -177,6 +177,29 @@ func TestBoundedAgentResponseModeDefaultsCompactAndValidates(t *testing.T) {
 	}
 }
 
+func TestBoundedAgentStatusDistinguishesCheckpointFromCompletion(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		state  taskstate.State
+		halt   string
+		replan bool
+		want   string
+	}{
+		{name: "new task", state: taskstate.State{AgentPhase: "inspect"}, want: "needs_continuation"},
+		{name: "verification pending", state: taskstate.State{AgentPhase: "verify", QualityStatus: "verifying"}, want: "needs_continuation"},
+		{name: "verified task", state: taskstate.State{AgentPhase: "finalize", QualityStatus: "ready"}, want: "ready"},
+		{name: "quality ready before finalize", state: taskstate.State{AgentPhase: "verify", QualityStatus: "ready"}, want: "needs_continuation"},
+		{name: "approval blocker", state: taskstate.State{AgentPhase: "verify"}, halt: "approval required", want: "halted"},
+		{name: "replan blocker", state: taskstate.State{AgentPhase: "inspect"}, halt: "stale context", replan: true, want: "replan_required"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := boundedAgentStatus(test.state, test.halt, test.replan); got != test.want {
+				t.Fatalf("status = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAgentToolIsPresentAndHasSpecialExecutor(t *testing.T) {
 	definitions := compactDefinitionsByName()
 	agent, ok := definitions["agent"]

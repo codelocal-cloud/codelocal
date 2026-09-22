@@ -13,14 +13,12 @@ import (
 )
 
 // PublicToolSurfaceVersion is the compatibility generation of the public MCP
-// contract. Generation 14 keeps the compact 14-tool catalog, forces AI hosts
-// to invalidate stale workspace schemas after the execution-mode choice was added,
-// and keeps discovery/tool-security rewriting/auth challenges working for HTTP/2
-// chunked requests where Content-Length is unknown. Authenticated execution remains
-// OAuth-protected. Bump the generation whenever the public contract or auth/discovery
-// behavior changes.
+// contract. Generation 15 keeps the compact 14-tool catalog and refreshes
+// cached MCP instructions so hosts see the explicit unfinished-task signal.
+// Authenticated execution remains OAuth-protected. Bump the generation whenever
+// the public contract or auth/discovery behavior changes.
 const (
-	PublicToolSurfaceVersion = 14
+	PublicToolSurfaceVersion = 15
 
 	// Version 1.5.16 was the generation-2 MCP identity. Keep the same release
 	// line and derive the patch from the surface generation so every future
@@ -228,8 +226,10 @@ const sessionlessWorkspaceRoutingInstructions = `Workspace routing: when the pro
 
 const executionModeChoiceInstructions = `Execution choice: before the first coding mutation in a workspace, call workspace(action=execution,workspaceKey=...). If configured=false, Safe Workspace remains the non-destructive default but ask the user once to choose Safe Workspace (isolated checkout, recommended) or Live Project (edit the active checkout directly). Persist only the user's explicit choice with workspace(action=execution,executionMode=safe|live,...). Never auto-switch execution mode. When configured=true, reuse the saved workspace choice without asking again.`
 
+const agentContinuationInstructions = `Agent completion: an agent result with status=needs_continuation is a checkpoint, not a finished user task. Use its workspaceKey, objective, nextAction and fresh context to plan the next safe bounded call; continue in the current turn while useful work remains. status=ready means the quality gate passed. If status=halted or replan_required, inspect the reason and resume only when safe; never retry a denied action or replay a mutation without fresh evidence. When the AI host ends its own turn before the task is done, report the unfinished work and a concrete next step instead of claiming completion. The MCP host controls its own turn length, and CodeLocal never auto-approves tool actions.`
+
 func publicMCPInstructions() string {
-	return compactOrchestrationInstructions + "\n\n" + sessionlessWorkspaceRoutingInstructions + "\n\n" + executionModeChoiceInstructions + "\n\nCompatibility: " + toolSurfaceSummary() + ". Legacy tool calls that CodeLocal can translate remain supported without user action. Only CODELOCAL_TOOL_SCHEMA_MISMATCH means the client requested a contract CodeLocal cannot translate."
+	return compactOrchestrationInstructions + "\n\n" + sessionlessWorkspaceRoutingInstructions + "\n\n" + executionModeChoiceInstructions + "\n\n" + agentContinuationInstructions + "\n\nCompatibility: " + toolSurfaceSummary() + ". Legacy tool calls that CodeLocal can translate remain supported without user action. Only CODELOCAL_TOOL_SCHEMA_MISMATCH means the client requested a contract CodeLocal cannot translate."
 }
 
 func staleToolSchemaNotice(originalTool string) string {
