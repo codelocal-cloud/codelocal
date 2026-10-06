@@ -17,10 +17,6 @@ type CatalogEntry struct {
 func BuiltinCatalog() []CatalogEntry {
 	return []CatalogEntry{
 		builtinPenpotCatalogEntry(),
-		builtinCatalogEntry("github", "GitHub", "Work with repositories, issues, pull requests and code review through an MCP connection.", []string{"Developer Tools", "Collaboration"}, []Capability{CapabilityExternalRead, CapabilityExternalWrite, CapabilityExternalDelete, CapabilityNetwork}, true),
-		builtinCatalogEntry("notion", "Notion", "Search workspace knowledge and create or update pages from CodeLocal chat.", []string{"Productivity", "Knowledge"}, []Capability{CapabilityExternalRead, CapabilityExternalWrite, CapabilityNetwork}, true),
-		builtinCatalogEntry("linear", "Linear", "Read projects and issues, then create or update engineering work from chat.", []string{"Developer Tools", "Project Management"}, []Capability{CapabilityExternalRead, CapabilityExternalWrite, CapabilityNetwork}, true),
-		builtinCatalogEntry("slack", "Slack", "Find conversations and send messages through an approval-aware MCP connection.", []string{"Communication", "Collaboration"}, []Capability{CapabilityExternalRead, CapabilityExternalWrite, CapabilityNetwork}, false),
 	}
 }
 

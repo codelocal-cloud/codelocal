@@ -2,6 +2,7 @@ package cloudserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -21,6 +22,70 @@ type mcpConnectionsInput struct {
 	Secrets  map[string]string `json:"secrets,omitempty"`
 }
 
+type runtimeMCPServer struct {
+	Name        string   `json:"name"`
+	Enabled     bool     `json:"enabled"`
+	Managed     bool     `json:"managed"`
+	Transport   string   `json:"transport"`
+	Command     string   `json:"command"`
+	Args        []string `json:"args"`
+	CWD         string   `json:"cwd"`
+	URL         string   `json:"url"`
+	Connected   bool     `json:"connected"`
+	ToolsCached int      `json:"toolsCached"`
+}
+
+func runtimeMCPConnections(value any, userID, deviceID string) []cloud.MCPConnection {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var payload struct {
+		Servers []runtimeMCPServer `json:"servers"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	out := make([]cloud.MCPConnection, 0, len(payload.Servers))
+	for _, item := range payload.Servers {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		if item.Managed && name == "penpot" {
+			continue
+		}
+		state := "configured"
+		lastError := ""
+		if !item.Enabled {
+			state = "error"
+			lastError = "MCP server is disabled."
+		} else if item.Connected && item.ToolsCached > 0 {
+			state = "ready"
+		}
+		connection := cloud.MCPConnection{
+			UserID:   userID,
+			Target:   "local",
+			DeviceID: deviceID,
+			Server: mcpconfig.Server{
+				Name: name, Enabled: item.Enabled, Transport: item.Transport,
+				Command: item.Command, Args: append([]string(nil), item.Args...), CWD: item.CWD, URL: item.URL,
+			},
+			State: state, ToolCount: item.ToolsCached, LastError: lastError, UpdatedAt: now,
+		}
+		if state == "ready" {
+			connection.ConnectedAt = now
+		}
+		out = append(out, connection)
+	}
+	return out
+}
+
+func mcpConnectionKey(connection cloud.MCPConnection) string {
+	return connection.Target + "\x00" + connection.DeviceID + "\x00" + connection.Server.Name
+}
+
 func (s *Server) mcpConnectionsListAPI(w http.ResponseWriter, r *http.Request) {
 	identity, ok := s.authenticatedAPIIdentity(w, r)
 	if !ok {
@@ -31,7 +96,54 @@ func (s *Server) mcpConnectionsListAPI(w http.ResponseWriter, r *http.Request) {
 		webutil.JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp_connections_unavailable"})
 		return
 	}
-	webutil.JSON(w, http.StatusOK, map[string]any{"items": connections})
+
+	merged := make(map[string]cloud.MCPConnection, len(connections))
+	order := make([]string, 0, len(connections))
+	for _, connection := range connections {
+		key := mcpConnectionKey(connection)
+		if _, exists := merged[key]; !exists {
+			order = append(order, key)
+		}
+		merged[key] = connection
+	}
+
+	if s.Workspaces != nil && s.Hub != nil {
+		if catalog, catalogErr := s.Workspaces.Catalog(r.Context(), identity.User.ID); catalogErr == nil {
+			seenDevices := map[string]bool{}
+			probed := 0
+			for _, workspace := range catalog {
+				if probed >= 4 || !workspace.RuntimeOnline || seenDevices[workspace.DeviceID] || !pluginCapability(&workspace, "mcpHub") {
+					continue
+				}
+				seenDevices[workspace.DeviceID] = true
+				probed++
+				ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+				result, callErr := s.Hub.Call(ctx, identity.User.ID, workspace.Key, "mcp-discovery", "mcp_list", map[string]any{}, false, cloud.RandomHex(16))
+				cancel()
+				if callErr != nil || !result.OK {
+					continue
+				}
+				for _, discovered := range runtimeMCPConnections(result.Result, identity.User.ID, workspace.DeviceID) {
+					key := mcpConnectionKey(discovered)
+					if existing, exists := merged[key]; exists {
+						discovered.ConnectedAt = existing.ConnectedAt
+						if discovered.State == "ready" && discovered.ConnectedAt == 0 {
+							discovered.ConnectedAt = discovered.UpdatedAt
+						}
+					} else {
+						order = append(order, key)
+					}
+					merged[key] = discovered
+				}
+			}
+		}
+	}
+
+	items := make([]cloud.MCPConnection, 0, len(order))
+	for _, key := range order {
+		items = append(items, merged[key])
+	}
+	webutil.JSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func validateMCPSecrets(servers []mcpconfig.Server, secrets map[string]string) error {
@@ -245,12 +357,14 @@ func (s *Server) mcpConnectionDeleteAPI(w http.ResponseWriter, r *http.Request) 
 		webutil.JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp_connection_delete_failed"})
 		return
 	}
-	if target == "local" && removed {
+	runtimeRemoved := false
+	if target == "local" {
 		if workspace, workspaceErr := s.activeWorkspaceForDevice(r.Context(), identity.User.ID, deviceID); workspaceErr == nil && s.Hub != nil {
 			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-			_, _ = s.Hub.Call(ctx, identity.User.ID, workspace.Key, "mcp-config", "mcp_remove", map[string]any{"name": name}, true, cloud.RandomHex(16))
+			result, callErr := s.Hub.Call(ctx, identity.User.ID, workspace.Key, "mcp-config", "mcp_remove", map[string]any{"name": name}, true, cloud.RandomHex(16))
 			cancel()
+			runtimeRemoved = callErr == nil && result.OK
 		}
 	}
-	webutil.JSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed})
+	webutil.JSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed || runtimeRemoved})
 }
