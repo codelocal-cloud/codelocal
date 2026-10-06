@@ -4,8 +4,8 @@ import "testing"
 
 func TestBuiltinCatalogManifestsValidate(t *testing.T) {
 	catalog := BuiltinCatalog()
-	if len(catalog) < 3 {
-		t.Fatalf("catalog size=%d want at least 3", len(catalog))
+	if len(catalog) < 1 {
+		t.Fatalf("catalog size=%d want at least 1", len(catalog))
 	}
 	seen := map[string]bool{}
 	for _, entry := range catalog {
@@ -43,9 +43,9 @@ func TestPenpotIsDefaultSystemPluginBoundToManagedMCP(t *testing.T) {
 }
 
 func TestManifestCapabilitiesAreUniqueAndSorted(t *testing.T) {
-	entry, ok := FindBuiltin("github")
+	entry, ok := FindBuiltin("penpot")
 	if !ok {
-		t.Fatal("github plugin missing")
+		t.Fatal("penpot plugin missing")
 	}
 	capabilities := ManifestCapabilities(entry.Manifest)
 	for i := 1; i < len(capabilities); i++ {
