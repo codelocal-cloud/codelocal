@@ -23,16 +23,18 @@ type mcpConnectionsInput struct {
 }
 
 type runtimeMCPServer struct {
-	Name        string   `json:"name"`
-	Enabled     bool     `json:"enabled"`
-	Managed     bool     `json:"managed"`
-	Transport   string   `json:"transport"`
-	Command     string   `json:"command"`
-	Args        []string `json:"args"`
-	CWD         string   `json:"cwd"`
-	URL         string   `json:"url"`
-	Connected   bool     `json:"connected"`
-	ToolsCached int      `json:"toolsCached"`
+	Name        string            `json:"name"`
+	Enabled     bool              `json:"enabled"`
+	Managed     bool              `json:"managed"`
+	Transport   string            `json:"transport"`
+	Command     string            `json:"command"`
+	Args        []string          `json:"args"`
+	CWD         string            `json:"cwd"`
+	Env         map[string]string `json:"env"`
+	URL         string            `json:"url"`
+	Headers     map[string]any    `json:"headers"`
+	Connected   bool              `json:"connected"`
+	ToolsCached int               `json:"toolsCached"`
 }
 
 func runtimeMCPConnections(value any, userID, deviceID string) []cloud.MCPConnection {
@@ -64,15 +66,23 @@ func runtimeMCPConnections(value any, userID, deviceID string) []cloud.MCPConnec
 		} else if item.Connected && item.ToolsCached > 0 {
 			state = "ready"
 		}
+		env := make(map[string]mcpconfig.Reference, len(item.Env))
+		for target, source := range item.Env {
+			if strings.TrimSpace(target) == "" || strings.TrimSpace(source) == "" {
+				continue
+			}
+			env[target] = mcpconfig.Reference{Source: source}
+		}
 		connection := cloud.MCPConnection{
 			UserID:   userID,
 			Target:   "local",
 			DeviceID: deviceID,
 			Server: mcpconfig.Server{
 				Name: name, Enabled: item.Enabled, Transport: item.Transport,
-				Command: item.Command, Args: append([]string(nil), item.Args...), CWD: item.CWD, URL: item.URL,
+				Command: item.Command, Args: append([]string(nil), item.Args...), CWD: item.CWD, Env: env, URL: item.URL,
 			},
 			State: state, ToolCount: item.ToolsCached, LastError: lastError, UpdatedAt: now,
+			ConfigEditable: !item.Managed && len(item.Headers) == 0,
 		}
 		if state == "ready" {
 			connection.ConnectedAt = now
@@ -100,6 +110,7 @@ func (s *Server) mcpConnectionsListAPI(w http.ResponseWriter, r *http.Request) {
 	merged := make(map[string]cloud.MCPConnection, len(connections))
 	order := make([]string, 0, len(connections))
 	for _, connection := range connections {
+		connection.ConfigEditable = true
 		key := mcpConnectionKey(connection)
 		if _, exists := merged[key]; !exists {
 			order = append(order, key)
@@ -127,6 +138,13 @@ func (s *Server) mcpConnectionsListAPI(w http.ResponseWriter, r *http.Request) {
 					key := mcpConnectionKey(discovered)
 					if existing, exists := merged[key]; exists {
 						discovered.ConnectedAt = existing.ConnectedAt
+						discovered.ConfigEditable = true
+						if len(existing.Server.Env) > 0 {
+							discovered.Server.Env = existing.Server.Env
+						}
+						if len(existing.Server.Headers) > 0 {
+							discovered.Server.Headers = existing.Server.Headers
+						}
 						if discovered.State == "ready" && discovered.ConnectedAt == 0 {
 							discovered.ConnectedAt = discovered.UpdatedAt
 						}
@@ -165,6 +183,26 @@ func validateMCPSecrets(servers []mcpconfig.Server, secrets map[string]string) e
 		}
 	}
 	return nil
+}
+
+func mcpSecretsForServer(server mcpconfig.Server, provided, existing map[string]string) map[string]string {
+	out := map[string]string{}
+	appendRef := func(ref mcpconfig.Reference) {
+		if value, ok := provided[ref.Source]; ok {
+			out[ref.Source] = value
+			return
+		}
+		if value, ok := existing[ref.Source]; ok {
+			out[ref.Source] = value
+		}
+	}
+	for _, ref := range server.Env {
+		appendRef(ref)
+	}
+	for _, ref := range server.Headers {
+		appendRef(ref)
+	}
+	return out
 }
 
 func onlineMCPConfig(server mcpconfig.Server, secrets map[string]string) (cloudmcp.Config, error) {
@@ -291,27 +329,37 @@ func (s *Server) mcpConnectionsCreateAPI(w http.ResponseWriter, r *http.Request)
 
 	created := make([]cloud.MCPConnection, 0, len(servers))
 	for _, server := range servers {
-		connection := cloud.MCPConnection{UserID: identity.User.ID, Target: input.Target, DeviceID: input.DeviceID, Server: server, State: "pending"}
+		existingSecrets := map[string]string{}
+		if _, secrets, found, lookupErr := s.Store.MCPConnection(r.Context(), identity.User.ID, input.Target, input.DeviceID, "", server.Name); lookupErr != nil {
+			webutil.JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp_connection_store_failed"})
+			return
+		} else if found {
+			existingSecrets = secrets
+		}
+		serverSecrets := mcpSecretsForServer(server, input.Secrets, existingSecrets)
+		connection := cloud.MCPConnection{UserID: identity.User.ID, Target: input.Target, DeviceID: input.DeviceID, Server: server, State: "pending", ConfigEditable: true}
 		if input.Target == "local" {
-			stored, storeErr := s.Store.SaveMCPConnection(r.Context(), connection, input.Secrets)
+			stored, storeErr := s.Store.SaveMCPConnection(r.Context(), connection, serverSecrets)
 			if storeErr != nil {
 				webutil.JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp_connection_store_failed"})
 				return
 			}
 			connection = stored
-			if applied, appliedOK := s.tryApplyLocalMCP(r.Context(), identity.User.ID, input.DeviceID, server, input.Secrets); appliedOK {
+			connection.ConfigEditable = true
+			if applied, appliedOK := s.tryApplyLocalMCP(r.Context(), identity.User.ID, input.DeviceID, server, serverSecrets); appliedOK {
 				connection.State, connection.ToolCount, connection.LastError = applied.State, applied.ToolCount, applied.LastError
-				connection, storeErr = s.Store.SaveMCPConnection(r.Context(), connection, input.Secrets)
+				connection, storeErr = s.Store.SaveMCPConnection(r.Context(), connection, serverSecrets)
 				if storeErr != nil {
 					webutil.JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp_connection_store_failed"})
 					return
 				}
+				connection.ConfigEditable = true
 			}
 			created = append(created, connection)
 			continue
 		}
 
-		cfg, cfgErr := onlineMCPConfig(server, input.Secrets)
+		cfg, cfgErr := onlineMCPConfig(server, serverSecrets)
 		if cfgErr != nil {
 			connection.State, connection.LastError = "error", cfgErr.Error()
 		} else if s.CloudMCP == nil {
@@ -324,11 +372,12 @@ func (s *Server) mcpConnectionsCreateAPI(w http.ResponseWriter, r *http.Request)
 				connection.State, connection.ToolCount = "ready", len(tools)
 			}
 		}
-		stored, storeErr := s.Store.SaveMCPConnection(r.Context(), connection, input.Secrets)
+		stored, storeErr := s.Store.SaveMCPConnection(r.Context(), connection, serverSecrets)
 		if storeErr != nil {
 			webutil.JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp_connection_store_failed"})
 			return
 		}
+		stored.ConfigEditable = true
 		created = append(created, stored)
 	}
 	webutil.JSON(w, http.StatusOK, map[string]any{"ok": true, "items": created})

@@ -16,6 +16,12 @@
   gap: 16px;
 }
 
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .panelHeader h2,
 .panelHeader p,
 .modalHeader h2,
@@ -441,7 +447,9 @@
 
 @media (max-width: 760px) {
   .panelHeader { align-items: stretch; flex-direction: column; }
-  .panelHeader .primaryButton { width: 100%; }
+  .headerActions { width: 100%; }
+  .headerActions .primaryButton,
+  .headerActions .secondaryButton { flex: 1 1 0; }
   .connectionGrid, .targetGrid { grid-template-columns: 1fr; }
   .backdrop { align-items: end; padding: 10px; }
   .modal { max-height: calc(100vh - 20px); border-radius: 14px 14px 8px 8px; }

@@ -38,16 +38,17 @@ CREATE INDEX idx_codelocal_mcp_connections_owner
 `
 
 type MCPConnection struct {
-	UserID      string           `json:"-"`
-	Target      string           `json:"target"`
-	DeviceID    string           `json:"deviceId,omitempty"`
-	WorkspaceID string           `json:"workspaceId,omitempty"`
-	Server      mcpconfig.Server `json:"server"`
-	State       string           `json:"state"`
-	ToolCount   int              `json:"toolCount"`
-	LastError   string           `json:"lastError,omitempty"`
-	ConnectedAt int64            `json:"connectedAt,omitempty"`
-	UpdatedAt   int64            `json:"updatedAt"`
+	UserID         string           `json:"-"`
+	Target         string           `json:"target"`
+	DeviceID       string           `json:"deviceId,omitempty"`
+	WorkspaceID    string           `json:"workspaceId,omitempty"`
+	Server         mcpconfig.Server `json:"server"`
+	State          string           `json:"state"`
+	ToolCount      int              `json:"toolCount"`
+	LastError      string           `json:"lastError,omitempty"`
+	ConnectedAt    int64            `json:"connectedAt,omitempty"`
+	UpdatedAt      int64            `json:"updatedAt"`
+	ConfigEditable bool             `json:"configEditable"`
 }
 
 func mcpConnectionBinding(user, target, device, workspace, name string) string {

@@ -11,13 +11,18 @@ type Device = {
   status: "online" | "offline" | "revoked";
 };
 
+type MCPReference = { source: string; prefix?: string };
+
 type MCPServer = {
   name: string;
   enabled: boolean;
   transport: "stdio" | "http";
   command?: string;
   args?: string[];
+  cwd?: string;
+  env?: Record<string, MCPReference>;
   url?: string;
+  headers?: Record<string, MCPReference>;
 };
 
 type MCPConnection = {
@@ -29,6 +34,7 @@ type MCPConnection = {
   lastError?: string;
   connectedAt?: number;
   updatedAt: number;
+  configEditable: boolean;
 };
 
 type Account = { csrf: string };
@@ -66,7 +72,27 @@ function serverSummary(server: MCPServer, remoteLabel: string) {
 function statusLabel(state: MCPConnection["state"]) {
   if (state === "ready") return "Ready";
   if (state === "error") return "Failed";
+  if (state === "configured") return "Configured";
   return "Pending";
+}
+
+function serverJSON(item: MCPConnection) {
+  const server: Record<string, unknown> = {};
+  if (item.server.transport === "stdio") {
+    server.command = item.server.command || "";
+    if ((item.server.args ?? []).length > 0) server.args = item.server.args;
+    if (item.server.cwd) server.cwd = item.server.cwd;
+  } else {
+    server.url = item.server.url || "";
+  }
+  if (!item.server.enabled) server.enabled = false;
+  if (item.server.env && Object.keys(item.server.env).length > 0) {
+    server.env = Object.fromEntries(Object.entries(item.server.env).map(([key, ref]) => [key, `\${${ref.source}}`]));
+  }
+  if (item.server.headers && Object.keys(item.server.headers).length > 0) {
+    server.headers = Object.fromEntries(Object.entries(item.server.headers).map(([key, ref]) => [key, `${ref.prefix ?? ""}\${${ref.source}}`]));
+  }
+  return JSON.stringify({ mcpServers: { [item.server.name]: server } }, null, 2);
 }
 
 function deviceLabel(devices: Device[], unknownLabel: string, id?: string) {
@@ -95,6 +121,8 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
   const [config, setConfig] = useState(ONLINE_SAMPLE);
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [editing, setEditing] = useState<MCPConnection | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
 
   const refresh = useCallback(async () => {
@@ -116,6 +144,7 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
     setDevices(nextDevices);
     setAccount(accountPayload);
     setDeviceId((current) => current || nextDevices.find((item) => item.status === "online")?.deviceId || nextDevices[0]?.deviceId || "");
+    return nextConnections;
   }, [onCountChange, t]);
 
   useEffect(() => {
@@ -150,9 +179,40 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
   }
 
   function openAddDialog() {
+    setEditing(null);
     resetForm("online");
     setNotice(null);
     setDialogOpen(true);
+  }
+
+  function openEditDialog(item: MCPConnection) {
+    setEditing(item);
+    setTarget(item.target);
+    setSetupMode("json");
+    setDeviceId(item.deviceId || "");
+    setName(item.server.name);
+    setURL(item.server.url || "");
+    setCommand(item.server.command || "");
+    setArgsText((item.server.args ?? []).join("\n"));
+    setBearerToken("");
+    setConfig(serverJSON(item));
+    setSecrets({});
+    setNotice(null);
+    setDialogOpen(true);
+  }
+
+  async function scanMCPs() {
+    setScanning(true);
+    setNotice(null);
+    try {
+      const items = await refresh();
+      const localCount = items.filter((item) => item.target === "local").length;
+      setNotice({ kind: "success", text: t("Scan complete. Found {count} local MCPs.", { count: localCount }) });
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : t("MCP connections are temporarily unavailable.") });
+    } finally {
+      setScanning(false);
+    }
   }
 
   function selectTarget(next: "online" | "local") {
@@ -189,6 +249,18 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
     try {
       const prepared = setupMode === "quick" ? buildQuickConfig() : { config: config.trim(), secrets };
       if (!prepared.config) throw new Error(t("Paste an MCP configuration first."));
+      if (editing) {
+        let parsed: { mcpServers?: Record<string, unknown> };
+        try {
+          parsed = JSON.parse(prepared.config) as { mcpServers?: Record<string, unknown> };
+        } catch {
+          throw new Error(t("MCP JSON is invalid."));
+        }
+        const names = Object.keys(parsed.mcpServers ?? {});
+        if (names.length !== 1 || names[0] !== editing.server.name) {
+          throw new Error(t("Keep the MCP name unchanged while editing."));
+        }
+      }
       const response = await fetch("/api/v1/mcp/connections", {
         method: "POST",
         credentials: "same-origin",
@@ -212,7 +284,7 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
           ? t("MCP saved, but its connection needs attention.")
           : hasPending
             ? t("MCP saved. It will finish setup when the selected device is available.")
-            : t("MCP added and ready."),
+            : editing ? t("MCP updated and ready.") : t("MCP added and ready."),
       });
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : t("Could not add this MCP.") });
@@ -243,11 +315,16 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
       <div className={styles.panelHeader}>
         <div>
           <h2>{t("Custom MCP")}</h2>
-          <p>{t("Add any MCP by URL, command, or JSON configuration.")}</p>
+          <p>{t("Local MCP JSON is the source of truth. Scan, edit, add, or remove servers from this dashboard.")}</p>
         </div>
-        <button className={styles.primaryButton} type="button" onClick={openAddDialog}>
-          <AppIcon name="plus" size={15} /> {t("Add MCP")}
-        </button>
+        <div className={styles.headerActions}>
+          <button className={styles.secondaryButton} type="button" disabled={scanning} onClick={() => void scanMCPs()}>
+            <AppIcon name="refresh" size={15} /> {scanning ? t("Scanning…") : t("Scan MCP")}
+          </button>
+          <button className={styles.primaryButton} type="button" onClick={openAddDialog}>
+            <AppIcon name="plus" size={15} /> {t("Add MCP")}
+          </button>
+        </div>
       </div>
 
       {notice && <div role="status" className={`${styles.notice} ${notice.kind === "error" ? styles.noticeError : styles.noticeSuccess}`}>{notice.text}</div>}
@@ -278,6 +355,7 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
               </div>
               {item.lastError && <p className={styles.errorText}>{item.lastError}</p>}
               <div className={styles.connectionActions}>
+                {item.configEditable && <button type="button" disabled={saving} onClick={() => openEditDialog(item)}>{t("Edit JSON")}</button>}
                 <button type="button" disabled={saving} onClick={() => void removeConnection(item)}>{t("Remove")}</button>
               </div>
             </article>
@@ -289,33 +367,33 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
         <div className={styles.backdrop} role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target && !saving) setDialogOpen(false); }}>
           <section className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="add-mcp-title">
             <header className={styles.modalHeader}>
-              <div><h2 id="add-mcp-title">{t("Add MCP")}</h2><p>{t("Choose where it runs, then add a URL, command, or paste JSON.")}</p></div>
+              <div><h2 id="add-mcp-title">{t(editing ? "Edit MCP JSON" : "Add MCP")}</h2><p>{t(editing ? "Edit the runtime JSON for this MCP. The server name stays unchanged." : "Choose where it runs, then add a URL, command, or paste JSON.")}</p></div>
               <button className={styles.iconButton} type="button" disabled={saving} onClick={() => setDialogOpen(false)} aria-label={t("Close")}><AppIcon name="close" size={17} /></button>
             </header>
 
-            <div className={styles.targetGrid} role="group" aria-label={t("Where should this MCP run?")}>
+            {!editing && <div className={styles.targetGrid} role="group" aria-label={t("Where should this MCP run?")}>
               <button type="button" data-active={target === "online" || undefined} className={styles.targetCard} onClick={() => selectTarget("online")}>
                 <AppIcon name="connection" size={19} /><strong>{t("Online")}</strong><span>{t("Works even when your computer is off")}</span>
               </button>
               <button type="button" data-active={target === "local" || undefined} className={styles.targetCard} onClick={() => selectTarget("local")}>
                 <AppIcon name="device" size={19} /><strong>{t("On my device")}</strong><span>{t("Runs through the CodeLocal client")}</span>
               </button>
-            </div>
+            </div>}
 
             {target === "local" && (
               <label className={styles.field}>
                 <span>{t("Device")}</span>
-                <select value={deviceId} onChange={(event) => setDeviceId(event.target.value)}>
+                <select value={deviceId} disabled={Boolean(editing)} onChange={(event) => setDeviceId(event.target.value)}>
                   {devices.length === 0 && <option value="">{t("No paired devices")}</option>}
                   {devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.deviceName} · {t(device.status === "online" ? "Online" : "Offline")}</option>)}
                 </select>
               </label>
             )}
 
-            <div className={styles.modeTabs} role="tablist" aria-label={t("MCP setup method")}>
+            {!editing && <div className={styles.modeTabs} role="tablist" aria-label={t("MCP setup method")}>
               <button type="button" role="tab" aria-selected={setupMode === "quick"} data-active={setupMode === "quick" || undefined} onClick={() => setSetupMode("quick")}>{t("Quick setup")}</button>
               <button type="button" role="tab" aria-selected={setupMode === "json"} data-active={setupMode === "json" || undefined} onClick={() => setSetupMode("json")}>{t("Paste JSON")}</button>
-            </div>
+            </div>}
 
             {setupMode === "quick" ? (
               <div className={styles.formStack}>
@@ -351,7 +429,7 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
 
             <footer className={styles.modalFooter}>
               <button className={styles.secondaryButton} type="button" disabled={saving} onClick={() => setDialogOpen(false)}>{t("Cancel")}</button>
-              <button className={styles.primaryButton} type="button" disabled={saving || (target === "local" && !deviceId)} onClick={() => void addConnection()}>{saving ? t("Testing…") : t("Test & add MCP")}</button>
+              <button className={styles.primaryButton} type="button" disabled={saving || (target === "local" && !deviceId)} onClick={() => void addConnection()}>{saving ? t("Testing…") : t(editing ? "Save & reload MCP" : "Test & add MCP")}</button>
             </footer>
           </section>
         </div>
