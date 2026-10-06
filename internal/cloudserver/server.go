@@ -347,6 +347,7 @@ func (s *Server) routes() {
 	mux.Handle("POST /pair/claim", webutil.RateLimit(s.Store, webutil.RateLimitOptions{Scope: "pair-claim-ip", Limit: 300, Window: time.Minute}, claim))
 	mux.HandleFunc("POST /api/client/auth/check", s.clientAuthCheck)
 	mux.HandleFunc("POST /api/client/auth/logout", s.clientAuthLogout)
+	mux.HandleFunc("POST /api/client/security/analyze", s.securityAnalyzeAPI)
 	mediaPresign := webutil.RateLimit(s.Store, webutil.RateLimitOptions{
 		Scope: "media-presign-device", Limit: 240, Window: time.Minute,
 		Subject: func(r *http.Request) string { id, _ := deviceAuth(r); return id },

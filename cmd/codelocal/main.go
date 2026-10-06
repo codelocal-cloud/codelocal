@@ -71,6 +71,8 @@ Reset / uninstall:
 Capabilities:
   codelocal setup                    Change Browser Automation and Computer Use choices
   codelocal doctor [project]         Inspect coding and automation readiness
+  codelocal security [options]       Scan the current project for security issues
+  codelocal security report          Show the latest local security report
   codelocal agent on [project]       Enable bounded Agent Mode for a workspace
   codelocal agent off [project]      Return that workspace to prompt mode
   codelocal agent status [project]   Show the effective local approval mode
@@ -1141,6 +1143,8 @@ func main() {
 				path = args[1]
 			}
 			err = doctor(path)
+		case "security":
+			err = securityCommand(ctx, args[1:])
 		case "agent":
 			err = agentModeCommand(args[1:])
 		case "approvals":
