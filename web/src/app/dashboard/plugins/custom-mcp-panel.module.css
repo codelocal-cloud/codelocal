@@ -265,6 +265,81 @@
   font-size: 12px;
 }
 
+.configPanel {
+  display: grid;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.configHeader > div {
+  display: grid;
+  gap: 3px;
+}
+
+.configHeader strong {
+  color: rgba(245, 248, 253, 0.92);
+  font-size: 13px;
+}
+
+.configHeader span {
+  color: rgba(195, 209, 229, 0.7);
+  font-size: 11px;
+}
+
+.configList {
+  display: grid;
+  gap: 10px;
+}
+
+.configCard {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 10px;
+  background: #090e17;
+}
+
+.configCard header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.configCard header > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.configCard header strong {
+  overflow: hidden;
+  color: rgba(244, 248, 253, 0.92);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.configCard header span {
+  color: rgba(190, 204, 224, 0.65);
+  font-size: 11px;
+}
+
+.configCard pre {
+  max-height: 360px;
+  margin: 0;
+  overflow: auto;
+  padding: 14px;
+  color: rgba(220, 230, 243, 0.88);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  tab-size: 2;
+  white-space: pre;
+}
+
 .backdrop {
   position: fixed;
   inset: 0;

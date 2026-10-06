@@ -41,23 +41,6 @@ type Account = { csrf: string };
 type Notice = { kind: "success" | "error"; text: string } | null;
 type SetupMode = "quick" | "json";
 
-const ONLINE_SAMPLE = `{
-  "mcpServers": {
-    "github": {
-      "url": "https://example.com/mcp"
-    }
-  }
-}`;
-
-const LOCAL_SAMPLE = `{
-  "mcpServers": {
-    "playwright": {
-      "command": "npx",
-      "args": ["-y", "@playwright/mcp@latest"]
-    }
-  }
-}`;
-
 function secretReferences(raw: string) {
   const found = new Set<string>();
   for (const match of raw.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) found.add(match[1]);
@@ -76,7 +59,7 @@ function statusLabel(state: MCPConnection["state"]) {
   return "Pending";
 }
 
-function serverJSON(item: MCPConnection) {
+function serverConfig(item: MCPConnection) {
   const server: Record<string, unknown> = {};
   if (item.server.transport === "stdio") {
     server.command = item.server.command || "";
@@ -92,7 +75,11 @@ function serverJSON(item: MCPConnection) {
   if (item.server.headers && Object.keys(item.server.headers).length > 0) {
     server.headers = Object.fromEntries(Object.entries(item.server.headers).map(([key, ref]) => [key, `${ref.prefix ?? ""}\${${ref.source}}`]));
   }
-  return JSON.stringify({ mcpServers: { [item.server.name]: server } }, null, 2);
+  return server;
+}
+
+function serverJSON(item: MCPConnection) {
+  return JSON.stringify({ mcpServers: { [item.server.name]: serverConfig(item) } }, null, 2);
 }
 
 function deviceLabel(devices: Device[], unknownLabel: string, id?: string) {
@@ -118,7 +105,7 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
   const [command, setCommand] = useState("");
   const [argsText, setArgsText] = useState("");
   const [bearerToken, setBearerToken] = useState("");
-  const [config, setConfig] = useState(ONLINE_SAMPLE);
+  const [config, setConfig] = useState("");
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -165,6 +152,23 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
   }, [refresh, t]);
 
   const refs = useMemo(() => secretReferences(config), [config]);
+  const localConfigGroups = useMemo(() => {
+    const groups = new Map<string, MCPConnection[]>();
+    for (const item of connections) {
+      if (item.target !== "local") continue;
+      const key = item.deviceId || "local";
+      const list = groups.get(key) ?? [];
+      list.push(item);
+      groups.set(key, list);
+    }
+    return [...groups.entries()].map(([id, items]) => ({
+      deviceId: id,
+      json: JSON.stringify({
+        mcpServers: Object.fromEntries(items.map((item) => [item.server.name, serverConfig(item)])),
+      }, null, 2),
+      count: items.length,
+    }));
+  }, [connections]);
 
   function resetForm(nextTarget: "online" | "local" = target) {
     setTarget(nextTarget);
@@ -174,7 +178,7 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
     setCommand("");
     setArgsText("");
     setBearerToken("");
-    setConfig(nextTarget === "online" ? ONLINE_SAMPLE : LOCAL_SAMPLE);
+    setConfig("");
     setSecrets({});
   }
 
@@ -217,6 +221,15 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
 
   function selectTarget(next: "online" | "local") {
     resetForm(next);
+  }
+
+  async function copyConfig(raw: string) {
+    try {
+      await navigator.clipboard.writeText(raw);
+      setNotice({ kind: "success", text: t("MCP JSON copied.") });
+    } catch {
+      setNotice({ kind: "error", text: t("Could not copy MCP JSON.") });
+    }
   }
 
   function buildQuickConfig() {
@@ -363,6 +376,33 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
         </div>
       )}
 
+      {localConfigGroups.length > 0 && (
+        <section className={styles.configPanel}>
+          <div className={styles.configHeader}>
+            <div>
+              <strong>{t("Local MCP Config")}</strong>
+              <span>{t("Only MCPs discovered from this device are shown here. No sample data.")}</span>
+            </div>
+          </div>
+          <div className={styles.configList}>
+            {localConfigGroups.map((group) => (
+              <article className={styles.configCard} key={group.deviceId}>
+                <header>
+                  <div>
+                    <strong>{deviceLabel(devices, t("Unknown device"), group.deviceId)}</strong>
+                    <span>{t("{count} MCP servers", { count: group.count })}</span>
+                  </div>
+                  <button className={styles.secondaryButton} type="button" onClick={() => void copyConfig(group.json)}>
+                    <AppIcon name="copy" size={14} /> {t("Copy JSON")}
+                  </button>
+                </header>
+                <pre>{group.json}</pre>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
       {dialogOpen && (
         <div className={styles.backdrop} role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target && !saving) setDialogOpen(false); }}>
           <section className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="add-mcp-title">
@@ -397,16 +437,16 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
 
             {setupMode === "quick" ? (
               <div className={styles.formStack}>
-                <label className={styles.field}><span>{t("Name")}</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="github" autoComplete="off" /></label>
+                <label className={styles.field}><span>{t("Name")}</span><input value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" /></label>
                 {target === "online" ? (
                   <>
-                    <label className={styles.field}><span>{t("MCP URL")}</span><input value={url} onChange={(event) => setURL(event.target.value)} placeholder="https://example.com/mcp" inputMode="url" autoComplete="off" /></label>
+                    <label className={styles.field}><span>{t("MCP URL")}</span><input value={url} onChange={(event) => setURL(event.target.value)} inputMode="url" autoComplete="off" /></label>
                     <label className={styles.field}><span>{t("Bearer token")} <em>{t("Optional")}</em></span><input type="password" value={bearerToken} onChange={(event) => setBearerToken(event.target.value)} placeholder={t("Leave blank if this MCP does not need a token")} autoComplete="new-password" /></label>
                   </>
                 ) : (
                   <>
-                    <label className={styles.field}><span>{t("Command")}</span><input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="npx" autoComplete="off" /></label>
-                    <label className={styles.field}><span>{t("Arguments")} <em>{t("One per line")}</em></span><textarea value={argsText} onChange={(event) => setArgsText(event.target.value)} placeholder={"-y\n@playwright/mcp@latest"} spellCheck={false} /></label>
+                    <label className={styles.field}><span>{t("Command")}</span><input value={command} onChange={(event) => setCommand(event.target.value)} autoComplete="off" /></label>
+                    <label className={styles.field}><span>{t("Arguments")} <em>{t("One per line")}</em></span><textarea value={argsText} onChange={(event) => setArgsText(event.target.value)} spellCheck={false} /></label>
                   </>
                 )}
               </div>
