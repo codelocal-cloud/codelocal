@@ -101,6 +101,34 @@
   opacity: 0.45;
 }
 
+.panelTabs {
+  display: inline-flex;
+  width: fit-content;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.panelTabs button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(205, 217, 234, 0.72);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.panelTabs button[data-active="true"] {
+  background: rgba(255, 255, 255, 0.075);
+  color: rgba(255, 255, 255, 0.96);
+}
+
 .notice {
   padding: 10px 12px;
   border-radius: 8px;
@@ -340,6 +368,225 @@
   white-space: pre;
 }
 
+.configEmpty,
+.configEditorCard,
+.lockedContext {
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.configEmpty {
+  min-height: 92px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 14px;
+  color: rgba(188, 203, 223, 0.72);
+}
+
+.configEmpty > div {
+  display: grid;
+  gap: 3px;
+}
+
+.configEmpty strong {
+  color: rgba(245, 248, 253, 0.92);
+  font-size: 13px;
+}
+
+.configEmpty span {
+  font-size: 12px;
+}
+
+.configEditorCard {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.configToolbar,
+.configFooter {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.compactField {
+  min-width: min(320px, 100%);
+  display: grid;
+  gap: 5px;
+}
+
+.compactField span {
+  color: rgba(215, 226, 240, 0.8);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.compactField select {
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  outline: 0;
+  background: #090e17;
+  color: rgba(240, 245, 251, 0.92);
+  font: inherit;
+  font-size: 12px;
+}
+
+.fullConfigEditor {
+  width: 100%;
+  min-height: 340px;
+  resize: vertical;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 9px;
+  outline: 0;
+  background: #090e17;
+  color: rgba(220, 230, 243, 0.9);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.fullConfigEditor:focus {
+  border-color: rgba(120, 160, 255, 0.34);
+  box-shadow: 0 0 0 2px rgba(83, 128, 239, 0.07);
+}
+
+.diffPanel {
+  display: grid;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.012);
+}
+
+.diffHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.diffHeader strong,
+.diffPanel p {
+  margin: 0;
+  color: rgba(221, 230, 242, 0.82);
+  font-size: 12px;
+}
+
+.diffHeader span {
+  min-width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.055);
+  color: rgba(230, 237, 247, 0.85);
+  font-size: 11px;
+}
+
+.diffList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.diffList span {
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+}
+
+.diffList span[data-kind="add"] { color: rgba(136, 224, 169, 0.95); background: rgba(50, 128, 79, 0.14); }
+.diffList span[data-kind="update"] { color: rgba(232, 197, 122, 0.95); background: rgba(145, 105, 31, 0.14); }
+.diffList span[data-kind="remove"] { color: rgba(242, 160, 170, 0.95); background: rgba(145, 47, 57, 0.14); }
+
+.configError {
+  padding: 9px 10px;
+  border: 1px solid rgba(226, 107, 119, 0.18);
+  border-radius: 8px;
+  background: rgba(66, 25, 31, 0.24);
+  color: rgba(242, 160, 170, 0.95);
+  font-size: 12px;
+}
+
+.lockedContext {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+}
+
+.lockedContext > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.lockedContext strong {
+  color: rgba(247, 250, 254, 0.94);
+  font-size: 13px;
+}
+
+.lockedContext div span {
+  overflow: hidden;
+  color: rgba(192, 207, 226, 0.7);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lockBadge {
+  color: rgba(205, 217, 234, 0.62);
+  font-size: 13px;
+}
+
+.jsonHelp {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: -3px;
+}
+
+.jsonHelp span {
+  color: rgba(195, 209, 229, 0.68);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.jsonHelp button {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: rgba(151, 183, 235, 0.92);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.exampleCode {
+  margin: 0;
+  overflow: auto;
+  padding: 10px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 8px;
+  background: rgba(4, 8, 14, 0.75);
+  color: rgba(206, 221, 239, 0.8);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .backdrop {
   position: fixed;
   inset: 0;
@@ -525,7 +772,15 @@
   .headerActions { width: 100%; }
   .headerActions .primaryButton,
   .headerActions .secondaryButton { flex: 1 1 0; }
+  .panelTabs { width: 100%; }
+  .panelTabs button { flex: 1 1 0; }
   .connectionGrid, .targetGrid { grid-template-columns: 1fr; }
+  .configToolbar,
+  .configFooter,
+  .jsonHelp { align-items: stretch; flex-direction: column; }
+  .compactField { min-width: 0; width: 100%; }
+  .fullConfigEditor { min-height: 300px; }
+  .jsonHelp button { align-self: flex-start; }
   .backdrop { align-items: end; padding: 10px; }
   .modal { max-height: calc(100vh - 20px); border-radius: 14px 14px 8px 8px; }
 }

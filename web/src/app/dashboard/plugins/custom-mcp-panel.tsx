@@ -40,6 +40,39 @@ type MCPConnection = {
 type Account = { csrf: string };
 type Notice = { kind: "success" | "error"; text: string } | null;
 type SetupMode = "quick" | "json";
+type PanelTab = "mcps" | "config";
+type ConfigChangeSet = {
+  added: string[];
+  updated: string[];
+  removed: string[];
+  error?: string;
+};
+
+function stableJSON(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJSON).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJSON(item)}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function parseMCPConfig(raw: string): Record<string, Record<string, unknown>> {
+  const parsed = JSON.parse(raw) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid");
+  const root = parsed as Record<string, unknown>;
+  if (Object.keys(root).some((key) => key !== "mcpServers")) throw new Error("invalid");
+  const servers = root.mcpServers;
+  if (!servers || typeof servers !== "object" || Array.isArray(servers)) throw new Error("invalid");
+  const result: Record<string, Record<string, unknown>> = {};
+  for (const [name, config] of Object.entries(servers as Record<string, unknown>)) {
+    if (!name.trim() || !config || typeof config !== "object" || Array.isArray(config)) throw new Error("invalid");
+    result[name] = config as Record<string, unknown>;
+  }
+  return result;
+}
 
 function secretReferences(raw: string) {
   const found = new Set<string>();
@@ -107,6 +140,11 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
   const [scanning, setScanning] = useState(false);
   const [editing, setEditing] = useState<MCPConnection | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
+  const [activeTab, setActiveTab] = useState<PanelTab>("mcps");
+  const [showJSONExample, setShowJSONExample] = useState(false);
+  const [configDeviceId, setConfigDeviceId] = useState("");
+  const [configDraft, setConfigDraft] = useState("");
+  const [applyingConfig, setApplyingConfig] = useState(false);
 
   const refresh = useCallback(async () => {
     const [connectionsResponse, devicesResponse, accountResponse] = await Promise.all([
@@ -166,6 +204,40 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
     }));
   }, [connections]);
 
+  const selectedConfigGroup = useMemo(
+    () => localConfigGroups.find((group) => group.deviceId === configDeviceId) ?? localConfigGroups[0],
+    [configDeviceId, localConfigGroups],
+  );
+
+  const configChanges = useMemo<ConfigChangeSet>(() => {
+    if (!selectedConfigGroup || !configDraft.trim()) return { added: [], updated: [], removed: [] };
+    try {
+      const current = parseMCPConfig(selectedConfigGroup.json);
+      const next = parseMCPConfig(configDraft);
+      const added = Object.keys(next).filter((key) => !(key in current)).sort();
+      const removed = Object.keys(current).filter((key) => !(key in next)).sort();
+      const updated = Object.keys(next)
+        .filter((key) => key in current && stableJSON(next[key]) !== stableJSON(current[key]))
+        .sort();
+      return { added, updated, removed };
+    } catch {
+      return { added: [], updated: [], removed: [], error: "invalid" };
+    }
+  }, [configDraft, selectedConfigGroup]);
+
+  const configChangeCount = configChanges.added.length + configChanges.updated.length + configChanges.removed.length;
+  const hasConfigChanges = !configChanges.error && configChangeCount > 0;
+
+  function openConfigTab() {
+    const selected = localConfigGroups.find((group) => group.deviceId === configDeviceId) ?? localConfigGroups[0];
+    setActiveTab("config");
+    if (!selected) return;
+    if (configDeviceId !== selected.deviceId || !configDraft) {
+      setConfigDeviceId(selected.deviceId);
+      setConfigDraft(selected.json);
+    }
+  }
+
   function resetForm(nextTarget: "online" | "local" = target) {
     setTarget(nextTarget);
     setSetupMode("quick");
@@ -176,6 +248,7 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
     setBearerToken("");
     setConfig("");
     setSecrets({});
+    setShowJSONExample(false);
   }
 
   function openAddDialog() {
@@ -197,6 +270,7 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
     setBearerToken("");
     setConfig(JSON.stringify(serverConfig(item), null, 2));
     setSecrets({});
+    setShowJSONExample(false);
     setNotice(null);
     setDialogOpen(true);
   }
@@ -225,6 +299,61 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
       setNotice({ kind: "success", text: t("MCP JSON copied.") });
     } catch {
       setNotice({ kind: "error", text: t("Could not copy MCP JSON.") });
+    }
+  }
+
+  function selectConfigDevice(nextDeviceId: string) {
+    const group = localConfigGroups.find((item) => item.deviceId === nextDeviceId);
+    setConfigDeviceId(nextDeviceId);
+    setConfigDraft(group?.json ?? "");
+    setNotice(null);
+  }
+
+  async function applyConfigChanges() {
+    if (!account?.csrf || !selectedConfigGroup || configChanges.error) return;
+    const changedNames = [...configChanges.added, ...configChanges.updated];
+    if (changedNames.length === 0 && configChanges.removed.length === 0) return;
+
+    setApplyingConfig(true);
+    setNotice(null);
+    try {
+      const nextServers = parseMCPConfig(configDraft);
+      for (const serverName of changedNames) {
+        const response = await fetch(`/api/v1/mcp/connections/local/${encodeURIComponent(serverName)}`, {
+          method: "PUT",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": account.csrf },
+          body: JSON.stringify({
+            target: "local",
+            deviceId: selectedConfigGroup.deviceId,
+            config: JSON.stringify({ mcpServers: { [serverName]: nextServers[serverName] } }, null, 2),
+            secrets: {},
+          }),
+        });
+        const payload = await response.json().catch(() => ({})) as { detail?: string; error?: string };
+        if (!response.ok) throw new Error(payload.detail || payload.error || t("Could not add this MCP."));
+      }
+
+      for (const serverName of configChanges.removed) {
+        const response = await fetch(
+          `/api/v1/mcp/connections/local/${encodeURIComponent(serverName)}?deviceId=${encodeURIComponent(selectedConfigGroup.deviceId)}`,
+          {
+            method: "DELETE",
+            credentials: "same-origin",
+            headers: { "X-CSRF-Token": account.csrf },
+          },
+        );
+        const payload = await response.json().catch(() => ({})) as { detail?: string; error?: string };
+        if (!response.ok) throw new Error(payload.detail || payload.error || t("Could not remove this MCP."));
+      }
+
+      await refresh();
+      setNotice({ kind: "success", text: t("MCP config updated.") });
+    } catch (error) {
+      await refresh().catch(() => undefined);
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : t("MCP connections are temporarily unavailable.") });
+    } finally {
+      setApplyingConfig(false);
     }
   }
 
@@ -348,66 +477,100 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
         </div>
       </div>
 
+      <div className={styles.panelTabs} role="tablist" aria-label={t("Custom MCP")}>
+        <button type="button" role="tab" aria-selected={activeTab === "mcps"} data-active={activeTab === "mcps" || undefined} onClick={() => setActiveTab("mcps")}>{t("MCPs")}</button>
+        <button type="button" role="tab" aria-selected={activeTab === "config"} data-active={activeTab === "config" || undefined} onClick={openConfigTab}>{t("MCP Config")}</button>
+      </div>
+
       {notice && <div role="status" className={`${styles.notice} ${notice.kind === "error" ? styles.noticeError : styles.noticeSuccess}`}>{notice.text}</div>}
 
-      {!loading && connections.length === 0 && (
-        <button className={styles.emptyAction} type="button" onClick={openAddDialog}>
-          <AppIcon name="connection" size={19} />
-          <span><strong>{t("No custom MCPs yet")}</strong><small>{t("Add an MCP server to use it alongside installed Plugins.")}</small></span>
-          <AppIcon name="plus" size={15} />
-        </button>
+      {activeTab === "mcps" && (
+        <>
+          {!loading && connections.length === 0 && (
+            <button className={styles.emptyAction} type="button" onClick={openAddDialog}>
+              <AppIcon name="connection" size={19} />
+              <span><strong>{t("No custom MCPs yet")}</strong><small>{t("Add an MCP server to use it alongside installed Plugins.")}</small></span>
+              <AppIcon name="plus" size={15} />
+            </button>
+          )}
+
+          {connections.length > 0 && (
+            <div className={styles.connectionGrid}>
+              {connections.map((item) => (
+                <article className={styles.connectionCard} key={`${item.target}-${item.deviceId || "cloud"}-${item.server.name}`}>
+                  <div className={styles.connectionTop}>
+                    <span className={styles.connectionIcon}><AppIcon name={item.target === "online" ? "connection" : "terminal"} size={17} /></span>
+                    <div className={styles.connectionCopy}>
+                      <strong>{item.server.name}</strong>
+                      <span>{serverSummary(item.server, t("Remote MCP"))}</span>
+                    </div>
+                    <span className={styles.status} data-state={item.state}><i />{t(statusLabel(item.state))}</span>
+                  </div>
+                  <div className={styles.connectionMeta}>
+                    <span>{item.target === "online" ? t("CodeLocal") : deviceLabel(devices, t("Unknown device"), item.deviceId)}</span>
+                    <span>{t("{count} tools", { count: item.toolCount })}</span>
+                  </div>
+                  {item.lastError && <p className={styles.errorText}>{item.lastError}</p>}
+                  <div className={styles.connectionActions}>
+                    {item.configEditable && <button type="button" disabled={saving} onClick={() => openEditDialog(item)}>{t("Edit JSON")}</button>}
+                    <button type="button" disabled={saving} onClick={() => void removeConnection(item)}>{t("Remove")}</button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
-      {connections.length > 0 && (
-        <div className={styles.connectionGrid}>
-          {connections.map((item) => (
-            <article className={styles.connectionCard} key={`${item.target}-${item.deviceId || "cloud"}-${item.server.name}`}>
-              <div className={styles.connectionTop}>
-                <span className={styles.connectionIcon}><AppIcon name={item.target === "online" ? "connection" : "terminal"} size={17} /></span>
-                <div className={styles.connectionCopy}>
-                  <strong>{item.server.name}</strong>
-                  <span>{serverSummary(item.server, t("Remote MCP"))}</span>
-                </div>
-                <span className={styles.status} data-state={item.state}><i />{t(statusLabel(item.state))}</span>
-              </div>
-              <div className={styles.connectionMeta}>
-                <span>{item.target === "online" ? t("CodeLocal") : deviceLabel(devices, t("Unknown device"), item.deviceId)}</span>
-                <span>{t("{count} tools", { count: item.toolCount })}</span>
-              </div>
-              {item.lastError && <p className={styles.errorText}>{item.lastError}</p>}
-              <div className={styles.connectionActions}>
-                {item.configEditable && <button type="button" disabled={saving} onClick={() => openEditDialog(item)}>{t("Edit JSON")}</button>}
-                <button type="button" disabled={saving} onClick={() => void removeConnection(item)}>{t("Remove")}</button>
-              </div>
-            </article>
-          ))}
-        </div>
-      )}
-
-      {localConfigGroups.length > 0 && (
+      {activeTab === "config" && (
         <section className={styles.configPanel}>
           <div className={styles.configHeader}>
             <div>
-              <strong>{t("Local MCP Config")}</strong>
-              <span>{t("Only MCPs discovered from this device are shown here. No sample data.")}</span>
+              <strong>{t("MCP Config")}</strong>
+              <span>{t("Edit all local MCP servers for one device. Review the diff before applying.")}</span>
             </div>
           </div>
-          <div className={styles.configList}>
-            {localConfigGroups.map((group) => (
-              <article className={styles.configCard} key={group.deviceId}>
-                <header>
-                  <div>
-                    <strong>{deviceLabel(devices, t("Unknown device"), group.deviceId)}</strong>
-                    <span>{t("{count} MCP servers", { count: group.count })}</span>
-                  </div>
-                  <button className={styles.secondaryButton} type="button" onClick={() => void copyConfig(group.json)}>
-                    <AppIcon name="copy" size={14} /> {t("Copy JSON")}
-                  </button>
-                </header>
-                <pre>{group.json}</pre>
-              </article>
-            ))}
-          </div>
+
+          {localConfigGroups.length === 0 ? (
+            <div className={styles.configEmpty}>
+              <AppIcon name="terminal" size={18} />
+              <div><strong>{t("No local MCP config yet")}</strong><span>{t("Pair or scan a device to manage its full MCP config.")}</span></div>
+            </div>
+          ) : (
+            <div className={styles.configEditorCard}>
+              <div className={styles.configToolbar}>
+                <label className={styles.compactField}>
+                  <span>{t("Device")}</span>
+                  <select value={selectedConfigGroup?.deviceId ?? ""} onChange={(event) => selectConfigDevice(event.target.value)}>
+                    {localConfigGroups.map((group) => <option key={group.deviceId} value={group.deviceId}>{deviceLabel(devices, t("Unknown device"), group.deviceId)}</option>)}
+                  </select>
+                </label>
+                <button className={styles.secondaryButton} type="button" onClick={() => void copyConfig(configDraft)}><AppIcon name="copy" size={14} /> {t("Copy JSON")}</button>
+              </div>
+
+              <textarea className={styles.fullConfigEditor} value={configDraft} onChange={(event) => setConfigDraft(event.target.value)} spellCheck={false} />
+
+              {configChanges.error ? (
+                <div className={styles.configError}>{t("Invalid MCP config.")}</div>
+              ) : (
+                <div className={styles.diffPanel}>
+                  <div className={styles.diffHeader}><strong>{t("Changes")}</strong><span>{configChangeCount}</span></div>
+                  {configChangeCount === 0 ? <p>{t("No changes")}</p> : (
+                    <div className={styles.diffList}>
+                      {configChanges.added.map((item) => <span key={`add-${item}`} data-kind="add">+ {item}</span>)}
+                      {configChanges.updated.map((item) => <span key={`update-${item}`} data-kind="update">~ {item}</span>)}
+                      {configChanges.removed.map((item) => <span key={`remove-${item}`} data-kind="remove">− {item}</span>)}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className={styles.configFooter}>
+                <button className={styles.secondaryButton} type="button" disabled={applyingConfig || !selectedConfigGroup} onClick={() => selectedConfigGroup && setConfigDraft(selectedConfigGroup.json)}>{t("Reset")}</button>
+                <button className={styles.primaryButton} type="button" disabled={applyingConfig || !hasConfigChanges} onClick={() => void applyConfigChanges()}>{applyingConfig ? t("Applying…") : t("Apply changes")}</button>
+              </div>
+            </div>
+          )}
         </section>
       )}
 
@@ -415,9 +578,17 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
         <div className={styles.backdrop} role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target && !saving) setDialogOpen(false); }}>
           <section className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="add-mcp-title">
             <header className={styles.modalHeader}>
-              <div><h2 id="add-mcp-title">{t(editing ? "Edit MCP JSON" : "Add MCP")}</h2><p>{t(editing ? "Edit the runtime JSON for this MCP. The server name stays unchanged." : "Choose where it runs, then add a URL, command, or paste JSON.")}</p></div>
+              <div><h2 id="add-mcp-title">{t(editing ? "Edit MCP" : "Add MCP")}</h2><p>{t(editing ? "Edit only this MCP. Name, target, and device are locked." : "Choose where it runs, then add a URL, command, or paste JSON.")}</p></div>
               <button className={styles.iconButton} type="button" disabled={saving} onClick={() => setDialogOpen(false)} aria-label={t("Close")}><AppIcon name="close" size={17} /></button>
             </header>
+
+            {editing && (
+              <div className={styles.lockedContext}>
+                <span className={styles.connectionIcon}><AppIcon name={editing.target === "online" ? "connection" : "terminal"} size={16} /></span>
+                <div><strong>{editing.server.name}</strong><span>{editing.target === "online" ? t("Online") : `${t("On my device")} · ${deviceLabel(devices, t("Unknown device"), editing.deviceId)}`}</span></div>
+                <span className={styles.lockBadge}>🔒</span>
+              </div>
+            )}
 
             {!editing && <div className={styles.targetGrid} role="group" aria-label={t("Where should this MCP run?")}>
               <button type="button" data-active={target === "online" || undefined} className={styles.targetCard} onClick={() => selectTarget("online")}>
@@ -428,10 +599,10 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
               </button>
             </div>}
 
-            {target === "local" && (
+            {!editing && target === "local" && (
               <label className={styles.field}>
                 <span>{t("Device")}</span>
-                <select value={deviceId} disabled={Boolean(editing)} onChange={(event) => setDeviceId(event.target.value)}>
+                <select value={deviceId} onChange={(event) => setDeviceId(event.target.value)}>
                   {devices.length === 0 && <option value="">{t("No paired devices")}</option>}
                   {devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.deviceName} · {t(device.status === "online" ? "Online" : "Offline")}</option>)}
                 </select>
@@ -461,7 +632,22 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
             ) : (
               <div className={styles.formStack}>
                 {!editing && <label className={styles.field}><span>{t("Name")}</span><input value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" /></label>}
-                <label className={styles.field}><span>{t("MCP JSON")}</span><textarea className={styles.codeInput} value={config} onChange={(event) => setConfig(event.target.value)} spellCheck={false} /></label>
+                <label className={styles.field}>
+                  <span>{t("Server config")}</span>
+                  <textarea className={styles.codeInput} value={config} onChange={(event) => setConfig(event.target.value)} spellCheck={false} />
+                </label>
+                <div className={styles.jsonHelp}>
+                  <span>{t("Paste only this MCP's server config. CodeLocal adds the name automatically.")}</span>
+                  <button type="button" onClick={() => setShowJSONExample((current) => !current)}>{t(showJSONExample ? "Hide example" : "View example")}</button>
+                </div>
+                {showJSONExample && (
+                  <pre className={styles.exampleCode}>{target === "local" ? `{
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+}` : `{
+  "url": "https://example.com/mcp"
+}`}</pre>
+                )}
                 {refs.length > 0 && (
                   <div className={styles.secretPanel}>
                     <div><strong>{t("Secrets referenced by this config")}</strong><p>{target === "local" ? t("Leave blank to use the environment variable already configured on this device.") : t("Values are encrypted and never written into the MCP JSON.")}</p></div>
