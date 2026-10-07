@@ -258,8 +258,12 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
     try {
       const prepared = setupMode === "quick" ? buildQuickConfig() : { config: config.trim(), secrets };
       if (!prepared.config) throw new Error(t("Paste an MCP configuration first."));
+
+      const serverName = editing?.server.name ?? normalizedName(name);
+      if (!serverName) throw new Error(t("Enter a name for this MCP."));
+
       let requestConfig = prepared.config;
-      if (editing) {
+      if (setupMode === "json") {
         let parsed: unknown;
         try {
           parsed = JSON.parse(prepared.config);
@@ -269,22 +273,22 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
           throw new Error(t("MCP JSON is invalid."));
         }
-        const serverConfig = parsed as Record<string, unknown>;
-        if ("mcpServers" in serverConfig || "servers" in serverConfig) {
+        const singleServerConfig = parsed as Record<string, unknown>;
+        if ("mcpServers" in singleServerConfig || "servers" in singleServerConfig) {
           throw new Error(t("MCP JSON is invalid."));
         }
-        requestConfig = JSON.stringify({ mcpServers: { [editing.server.name]: serverConfig } }, null, 2);
+        requestConfig = JSON.stringify({ mcpServers: { [serverName]: singleServerConfig } }, null, 2);
       }
-      const endpoint = editing
-        ? `/api/v1/mcp/connections/${encodeURIComponent(editing.target)}/${encodeURIComponent(editing.server.name)}`
-        : "/api/v1/mcp/connections";
+
+      const requestTarget = editing?.target ?? target;
+      const endpoint = `/api/v1/mcp/connections/${encodeURIComponent(requestTarget)}/${encodeURIComponent(serverName)}`;
       const response = await fetch(endpoint, {
-        method: editing ? "PUT" : "POST",
+        method: "PUT",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json", "X-CSRF-Token": account.csrf },
         body: JSON.stringify({
-          target: editing?.target ?? target,
-          deviceId: (editing?.target ?? target) === "local" ? (editing?.deviceId ?? deviceId) : undefined,
+          target: requestTarget,
+          deviceId: requestTarget === "local" ? (editing?.deviceId ?? deviceId) : undefined,
           config: requestConfig,
           secrets: prepared.secrets,
         }),
@@ -456,6 +460,7 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
               </div>
             ) : (
               <div className={styles.formStack}>
+                {!editing && <label className={styles.field}><span>{t("Name")}</span><input value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" /></label>}
                 <label className={styles.field}><span>{t("MCP JSON")}</span><textarea className={styles.codeInput} value={config} onChange={(event) => setConfig(event.target.value)} spellCheck={false} /></label>
                 {refs.length > 0 && (
                   <div className={styles.secretPanel}>
