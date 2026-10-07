@@ -205,6 +205,21 @@ func mcpSecretsForServer(server mcpconfig.Server, provided, existing map[string]
 	return out
 }
 
+func parseScopedMCPUpdate(raw string, mode mcpconfig.Mode, expectedName string) (mcpconfig.Server, error) {
+	servers, err := mcpconfig.Parse(raw, mode)
+	if err != nil {
+		return mcpconfig.Server{}, err
+	}
+	if len(servers) != 1 {
+		return mcpconfig.Server{}, errors.New("single MCP edit must contain exactly one server")
+	}
+	server := servers[0]
+	if server.Name != expectedName {
+		return mcpconfig.Server{}, errors.New("MCP server name must match the edited connection")
+	}
+	return server, nil
+}
+
 func onlineMCPConfig(server mcpconfig.Server, secrets map[string]string) (cloudmcp.Config, error) {
 	endpoint, err := cloudmcp.ValidateEndpoint(server.URL)
 	if err != nil {
@@ -381,6 +396,109 @@ func (s *Server) mcpConnectionsCreateAPI(w http.ResponseWriter, r *http.Request)
 		created = append(created, stored)
 	}
 	webutil.JSON(w, http.StatusOK, map[string]any{"ok": true, "items": created})
+}
+
+func (s *Server) mcpConnectionUpdateAPI(w http.ResponseWriter, r *http.Request) {
+	identity, ok := s.pluginMutationIdentity(w, r, true)
+	if !ok {
+		return
+	}
+	var input mcpConnectionsInput
+	if webutil.DecodeJSON(r, 256<<10, &input) != nil {
+		webutil.JSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_mcp_connection"})
+		return
+	}
+
+	target := strings.ToLower(strings.TrimSpace(r.PathValue("target")))
+	name := strings.TrimSpace(r.PathValue("name"))
+	if name == "" {
+		webutil.JSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_mcp_name"})
+		return
+	}
+	mode := mcpconfig.ModeLocal
+	if target == "online" {
+		mode = mcpconfig.ModeOnline
+	} else if target != "local" {
+		webutil.JSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_mcp_target"})
+		return
+	}
+
+	server, err := parseScopedMCPUpdate(input.Config, mode, name)
+	if err != nil {
+		webutil.JSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_mcp_config", "detail": err.Error()})
+		return
+	}
+	if input.Secrets == nil {
+		input.Secrets = map[string]string{}
+	}
+	if err := validateMCPSecrets([]mcpconfig.Server{server}, input.Secrets); err != nil {
+		webutil.JSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_mcp_secrets", "detail": err.Error()})
+		return
+	}
+
+	deviceID := ""
+	if target == "local" {
+		deviceID = strings.TrimSpace(input.DeviceID)
+		if deviceID == "" || !s.accountOwnsDevice(r.Context(), identity.User.ID, deviceID) {
+			webutil.JSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_mcp_device"})
+			return
+		}
+	}
+
+	existingSecrets := map[string]string{}
+	if _, secrets, found, lookupErr := s.Store.MCPConnection(r.Context(), identity.User.ID, target, deviceID, "", name); lookupErr != nil {
+		webutil.JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp_connection_store_failed"})
+		return
+	} else if found {
+		existingSecrets = secrets
+	}
+	serverSecrets := mcpSecretsForServer(server, input.Secrets, existingSecrets)
+	connection := cloud.MCPConnection{
+		UserID: identity.User.ID, Target: target, DeviceID: deviceID, Server: server,
+		State: "pending", ConfigEditable: true,
+	}
+
+	if target == "local" {
+		stored, storeErr := s.Store.SaveMCPConnection(r.Context(), connection, serverSecrets)
+		if storeErr != nil {
+			webutil.JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp_connection_store_failed"})
+			return
+		}
+		connection = stored
+		connection.ConfigEditable = true
+		if applied, appliedOK := s.tryApplyLocalMCP(r.Context(), identity.User.ID, deviceID, server, serverSecrets); appliedOK {
+			connection.State, connection.ToolCount, connection.LastError = applied.State, applied.ToolCount, applied.LastError
+			connection, storeErr = s.Store.SaveMCPConnection(r.Context(), connection, serverSecrets)
+			if storeErr != nil {
+				webutil.JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp_connection_store_failed"})
+				return
+			}
+			connection.ConfigEditable = true
+		}
+		webutil.JSON(w, http.StatusOK, map[string]any{"ok": true, "items": []cloud.MCPConnection{connection}})
+		return
+	}
+
+	cfg, cfgErr := onlineMCPConfig(server, serverSecrets)
+	if cfgErr != nil {
+		connection.State, connection.LastError = "error", cfgErr.Error()
+	} else if s.CloudMCP == nil {
+		connection.State, connection.LastError = "error", "Cloud MCP runtime is unavailable."
+	} else {
+		tools, discoverErr := s.CloudMCP.Discover(r.Context(), identity.User.ID, cfg)
+		if discoverErr != nil {
+			connection.State, connection.LastError = "error", discoverErr.Error()
+		} else {
+			connection.State, connection.ToolCount = "ready", len(tools)
+		}
+	}
+	stored, storeErr := s.Store.SaveMCPConnection(r.Context(), connection, serverSecrets)
+	if storeErr != nil {
+		webutil.JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp_connection_store_failed"})
+		return
+	}
+	stored.ConfigEditable = true
+	webutil.JSON(w, http.StatusOK, map[string]any{"ok": true, "items": []cloud.MCPConnection{stored}})
 }
 
 func (s *Server) mcpConnectionDeleteAPI(w http.ResponseWriter, r *http.Request) {

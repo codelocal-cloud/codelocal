@@ -78,10 +78,6 @@ function serverConfig(item: MCPConnection) {
   return server;
 }
 
-function serverJSON(item: MCPConnection) {
-  return JSON.stringify({ mcpServers: { [item.server.name]: serverConfig(item) } }, null, 2);
-}
-
 function deviceLabel(devices: Device[], unknownLabel: string, id?: string) {
   return devices.find((device) => device.deviceId === id)?.deviceName || id || unknownLabel;
 }
@@ -199,7 +195,7 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
     setCommand(item.server.command || "");
     setArgsText((item.server.args ?? []).join("\n"));
     setBearerToken("");
-    setConfig(serverJSON(item));
+    setConfig(JSON.stringify(serverConfig(item), null, 2));
     setSecrets({});
     setNotice(null);
     setDialogOpen(true);
@@ -262,26 +258,34 @@ export function CustomMCPPanel({ onCountChange }: { onCountChange?: (count: numb
     try {
       const prepared = setupMode === "quick" ? buildQuickConfig() : { config: config.trim(), secrets };
       if (!prepared.config) throw new Error(t("Paste an MCP configuration first."));
+      let requestConfig = prepared.config;
       if (editing) {
-        let parsed: { mcpServers?: Record<string, unknown> };
+        let parsed: unknown;
         try {
-          parsed = JSON.parse(prepared.config) as { mcpServers?: Record<string, unknown> };
+          parsed = JSON.parse(prepared.config);
         } catch {
           throw new Error(t("MCP JSON is invalid."));
         }
-        const names = Object.keys(parsed.mcpServers ?? {});
-        if (names.length !== 1 || names[0] !== editing.server.name) {
-          throw new Error(t("Keep the MCP name unchanged while editing."));
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error(t("MCP JSON is invalid."));
         }
+        const serverConfig = parsed as Record<string, unknown>;
+        if ("mcpServers" in serverConfig || "servers" in serverConfig) {
+          throw new Error(t("MCP JSON is invalid."));
+        }
+        requestConfig = JSON.stringify({ mcpServers: { [editing.server.name]: serverConfig } }, null, 2);
       }
-      const response = await fetch("/api/v1/mcp/connections", {
-        method: "POST",
+      const endpoint = editing
+        ? `/api/v1/mcp/connections/${encodeURIComponent(editing.target)}/${encodeURIComponent(editing.server.name)}`
+        : "/api/v1/mcp/connections";
+      const response = await fetch(endpoint, {
+        method: editing ? "PUT" : "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json", "X-CSRF-Token": account.csrf },
         body: JSON.stringify({
-          target,
-          deviceId: target === "local" ? deviceId : undefined,
-          config: prepared.config,
+          target: editing?.target ?? target,
+          deviceId: (editing?.target ?? target) === "local" ? (editing?.deviceId ?? deviceId) : undefined,
+          config: requestConfig,
           secrets: prepared.secrets,
         }),
       });
