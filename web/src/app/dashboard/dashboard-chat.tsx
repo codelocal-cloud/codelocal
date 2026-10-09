@@ -15,6 +15,7 @@ import { ChatNewTaskDialog, GENERAL_PROJECT_KEY, type ChatNewTaskModel, type Cha
 import { ChatProviderManager } from "./chat-provider-manager";
 import { ChatTopBar } from "./chat-top-bar";
 import { ChatRichMessage } from "./chat-rich-message";
+import { shouldDispatchQueuedPrompt, type ChatRunOutcome, type QueuedChatPrompt } from "./chat-queue";
 import { ChatSidebarBrand, ChatSidebarFooter } from "./chat-sidebar-footer";
 import { chatViewportFrame } from "./chat-visual-viewport";
 import { projectTreeOpen, threadBelongsToWorkspace, threadCreationPayload, toggleExpandedProject, workspaceIdentityKey } from "./chat-workspace-key";
@@ -234,6 +235,8 @@ export function DashboardChat() {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [queuedPrompt, setQueuedPrompt] = useState<QueuedChatPrompt | null>(null);
+  const [runOutcome, setRunOutcome] = useState<ChatRunOutcome>("idle");
   const [mode, setMode] = useState<ChatMode>("agent");
   const [contextMode, setContextMode] = useState<ChatContextMode>("smart");
   const [goal, setGoal] = useState("");
@@ -704,11 +707,44 @@ export function DashboardChat() {
     void prepareImage(file);
   }
 
+  function queueNextPrompt() {
+    const content = input.trim();
+    if (!loading || !activeThreadId || !content || image) return;
+    setQueuedPrompt({ threadId: activeThreadId, content });
+    setInput("");
+    setNotice({ kind: "status", text: "Next instruction queued for this task. It will run only if the current response completes successfully." });
+  }
+
+  function sendQueuedPrompt() {
+    if (loading || historyLoading || threadActionLoading || !queuedPrompt || queuedPrompt.threadId !== activeThreadId) return;
+    quickMessageRef.current = queuedPrompt.content;
+    setQueuedPrompt(null);
+    setRunOutcome("idle");
+    window.requestAnimationFrame(() => formRef.current?.requestSubmit());
+  }
+
+  useEffect(() => {
+    if (!shouldDispatchQueuedPrompt({
+      queue: queuedPrompt,
+      activeThreadId,
+      busy: loading || historyLoading || threadActionLoading,
+      runOutcome,
+    }) || !queuedPrompt) return;
+    const frame = window.requestAnimationFrame(() => {
+      quickMessageRef.current = queuedPrompt.content;
+      setQueuedPrompt(null);
+      setRunOutcome("idle");
+      formRef.current?.requestSubmit();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [loading, historyLoading, threadActionLoading, runOutcome, queuedPrompt, activeThreadId]);
+
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
     if (window.matchMedia("(pointer: coarse)").matches || window.innerWidth <= 820) return;
     event.preventDefault();
-    formRef.current?.requestSubmit();
+    if (loading) queueNextPrompt();
+    else formRef.current?.requestSubmit();
   }
 
   function updateAssistant(index: number, content: string, toolCalls: ToolCall[], skills?: SkillBadge[]) {
@@ -998,9 +1034,11 @@ export function DashboardChat() {
     const placeholderIndex = next.length;
 
     setMessages([...next, { role: "assistant", content: "", tool_calls: [] }]);
-    setInput("");
+    // Quick actions/queued turns must not erase a newer unsent composer draft.
+    if (!quickMessage) setInput("");
     setImage(null);
     setLoading(true);
+    setRunOutcome("running");
     if (fileRef.current) fileRef.current.value = "";
 
     let streamedContent = "";
@@ -1008,6 +1046,7 @@ export function DashboardChat() {
     const controller = new AbortController();
     streamAbortRef.current = controller;
     const finishStoppedResponse = () => {
+      setRunOutcome("blocked");
       finishStoppedAssistant(placeholderIndex, streamedContent, streamedToolCalls);
       setNotice({ kind: "status", text: t(streamedContent.trim() || streamedToolCalls.length ? "Stopped responding; received content was preserved." : "Stopped before a response was received.") });
     };
@@ -1200,7 +1239,12 @@ export function DashboardChat() {
         }
       }
       if (!completed && lastError) throw lastError;
+      if (completed) {
+        // Do not auto-send a queued instruction after an approval or failed tool.
+        setRunOutcome(streamedToolCalls.some((tool) => tool.status !== "done") ? "blocked" : "done");
+      }
     } catch (error) {
+      setRunOutcome("blocked");
       if (controller.signal.aborted) {
         finishStoppedResponse();
         return;
@@ -1219,22 +1263,28 @@ export function DashboardChat() {
   function stopStream() {
     const controller = streamAbortRef.current;
     if (!controller || controller.signal.aborted) return;
+    setRunOutcome("blocked");
     setNotice({ kind: "status", text: t("Stopping response…") });
     controller.abort("user_stop");
   }
 
   async function clear(thread?: ChatThread) {
     const target = thread ?? activeThread;
-    if (!target || !window.confirm(t("Delete all content in “{title}”?", { title: target.title }))) return;
-    if (target.id === activeThreadId) {
-      setMessages([]);
-      setNotice(null);
-    }
+    if (loading || threadActionLoading || !target || !window.confirm(t("Delete all content in “{title}”?", { title: target.title }))) return;
+    setThreadActionLoading(true);
     try {
       const response = await fetch(`/api/v1/dashboard/chat/history?threadId=${encodeURIComponent(target.id)}`, { method: "DELETE", credentials: "include" });
       if (!response.ok) throw new Error(String(response.status));
+      // Only remove local content after the server confirms deletion.
+      if (target.id === activeThreadId) {
+        setMessages([]);
+        setNotice(null);
+      }
     } catch {
+      // Preserve the conversation on failure. Do not claim that the server deleted it.
       setNotice({ kind: "error", text: t("Could not delete chat history on the server") });
+    } finally {
+      setThreadActionLoading(false);
     }
   }
 
@@ -1243,6 +1293,7 @@ export function DashboardChat() {
   }
 
   function selectThread(thread: ChatThread) {
+    if (loading || historyLoading || threadActionLoading) return;
     setThreadDrawerOpen(false);
     const targetWorkspaceKey = thread.workspaceKey;
     if (targetWorkspaceKey) setExpandedProjects((current) => new Set(current).add(targetWorkspaceKey));
@@ -1260,7 +1311,7 @@ export function DashboardChat() {
   function ThreadRow({ thread }: { thread: ChatThread }) {
     return (
       <div className={`${styles.threadItem} ${treeStyles.threadItem} ${thread.id === activeThreadId ? styles.threadItemActive : ""}`}>
-        <button className={`${styles.threadSelect} ${treeStyles.threadSelect}`} type="button" onClick={() => selectThread(thread)} disabled={loading || historyLoading} title={thread.title}>
+        <button className={`${styles.threadSelect} ${treeStyles.threadSelect}`} type="button" onClick={() => selectThread(thread)} disabled={loading || historyLoading || threadActionLoading} title={thread.title}>
           <AppIcon name="chat" size={15} />
           <span>{thread.title}</span>
         </button>
@@ -1507,7 +1558,7 @@ export function DashboardChat() {
                   </div>
                 ) : null}
                 {message.tool_calls?.length ? (
-                  <ChatActionSummary actions={message.tool_calls} busy={loading} onApprove={() => submitQuickMessage("full access")} />
+                  <ChatActionSummary actions={message.tool_calls} busy={loading} onApprove={(access) => submitQuickMessage(access)} />
                 ) : null}
                 {message.image ? <img src={message.image} alt={t("Sent image")} className={styles.msgImage} /> : null}
                 {message.content ? (
@@ -1526,6 +1577,14 @@ export function DashboardChat() {
 
         {showJumpLatest ? <button className={mobileStyles.jumpLatest} type="button" onClick={jumpToLatest}><AppIcon name="chevron-down" size={16} /> {t("Latest")}</button> : null}
 
+        {queuedPrompt && queuedPrompt.threadId === activeThreadId ? (
+          <div className={styles.queuedPrompt} role="status">
+            <AppIcon name="check" size={15} />
+            <span><strong>Next instruction</strong><small title={queuedPrompt.content}>{queuedPrompt.content}</small></span>
+            {!loading ? <button type="button" onClick={sendQueuedPrompt}>Send now</button> : null}
+            <button type="button" onClick={() => setQueuedPrompt(null)} aria-label="Remove queued instruction"><AppIcon name="close" size={15} /></button>
+          </div>
+        ) : null}
         <form ref={formRef} className={styles.chatForm} onSubmit={send} onPaste={onPaste}>
           <input ref={fileRef} type="file" accept="image/*" onChange={onFile} className={styles.fileInput} />
           {image ? <div className={styles.imagePreview}><img src={image.previewUrl} alt={t("Image ready to send")} /><button type="button" onClick={discardImage} aria-label={t("Remove image")}><AppIcon name="close" size={14} /></button></div> : null}
@@ -1539,6 +1598,11 @@ export function DashboardChat() {
               <button type="button" className={styles.attachBtn} onClick={() => fileRef.current?.click()} aria-label={t("Attach image")} disabled={loading || imageUploading}>
                 <AppIcon name="paperclip" size={17} />
               </button>
+              {headerProject ? (
+                <button type="button" className={styles.attachBtn} onClick={() => submitQuickMessage("Inspect the current project's real Git status and unified diff using get_project_git_status and review_project_diff. Summarize changed files, do not modify anything.")} title="Review project changes (read-only)" aria-label="Review Git changes" disabled={loading || historyLoading || threadActionLoading || !activeThreadId || activeModels.length === 0}>
+                  <AppIcon name="code" size={17} />
+                </button>
+              ) : null}
               <label className={styles.modePicker} title={mode === "agent" ? t("Agent can edit files and run commands") : t("{mode} uses read-only tools", { mode: mode === "ask" ? "Ask" : "Plan" })}>
                 <select value={mode} onChange={(event) => setMode(event.target.value as ChatMode)} aria-label={t("Choose chat mode")} disabled={loading}>
                   <option value="ask">Ask</option>
@@ -1552,6 +1616,11 @@ export function DashboardChat() {
                 {goal ? <button className={styles.goalClear} type="button" onClick={() => setGoal("")} aria-label={t("Clear goal")} disabled={loading}><AppIcon name="close" size={11} /></button> : null}
               </label>
             </div>
+            {loading && input.trim() && !image ? (
+              <button className={styles.queueButton} type="button" onClick={queueNextPrompt} title="Queue the next instruction for this task" aria-label="Queue next instruction">
+                <AppIcon name="plus" size={15} /> <span>Queue</span>
+              </button>
+            ) : null}
             <button className={`${styles.sendBtn} ${loading ? styles.stopBtn : ""}`} type={loading ? "button" : "submit"} onClick={loading ? stopStream : undefined} disabled={loading ? false : imageUploading || historyLoading || threadActionLoading || activeModels.length === 0 || (!input.trim() && !image)} aria-label={loading ? t("Stop response") : t("Send")} title={loading ? t("Stop response") : activeModels.length === 0 ? "Add an AI provider first" : t("Send")}>
               <AppIcon name={loading ? "stop" : "send"} size={loading ? 16 : 18} />
             </button>

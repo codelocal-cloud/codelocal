@@ -268,6 +268,8 @@ func TestDashboardRuntimeToolSpecMapsToNativeRuntime(t *testing.T) {
 		{"run_project_command", map[string]any{"command": "go test ./..."}, "run_command", true},
 		{"poll_project_command", map[string]any{"processId": "process-1"}, "process_poll", false},
 		{"verify_project_changes", map[string]any{}, "verify_changes", false},
+		{"get_project_git_status", map[string]any{}, "git_status", false},
+		{"review_project_diff", map[string]any{"path": "src/app.tsx", "cached": true}, "git_diff", false},
 	}
 	for _, test := range tests {
 		t.Run(test.name+test.wantTool, func(t *testing.T) {

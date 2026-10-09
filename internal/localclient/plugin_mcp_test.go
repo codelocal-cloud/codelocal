@@ -125,7 +125,18 @@ func TestRemoveManagedPenpotClearsKeyButKeepsSystemServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	servers := listed.([]map[string]any)
-	if len(servers) != 1 || servers[0]["name"] != managedPenpotPluginID {
+	// Global MCP settings may already contain unrelated servers on this machine.
+	// Disconnecting Penpot must preserve its managed system entry regardless.
+	foundPenpot := false
+	for _, server := range servers {
+		if server["name"] == managedPenpotPluginID {
+			foundPenpot = true
+			if server["managed"] != true {
+				t.Fatalf("Penpot is no longer a managed system server: %#v", server)
+			}
+		}
+	}
+	if !foundPenpot {
 		t.Fatalf("system Penpot server was removed: %#v", servers)
 	}
 }

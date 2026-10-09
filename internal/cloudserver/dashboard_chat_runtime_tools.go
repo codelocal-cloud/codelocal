@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/0xmarkhydra/codelocal/internal/cloud"
 	"github.com/0xmarkhydra/codelocal/internal/gateway"
@@ -72,6 +73,16 @@ func dashboardExecutionResumeFromRequest(r *http.Request) dashboardChatExecution
 }
 
 var dashboardRuntimeChatTools = []map[string]any{
+	dashboardRuntimeTool("get_project_git_status", "Inspect the current Git status in the active project. Read-only; use before editing or reviewing changes.", map[string]any{
+		"workspace":  map[string]any{"type": "string", "description": "Optional active workspace name or id."},
+		"repository": map[string]any{"type": "string", "description": "Optional repository identifier for multi-repo workspaces."},
+	}),
+	dashboardRuntimeTool("review_project_diff", "Read the actual Git unified diff from the active project. Read-only; never fabricate changes.", map[string]any{
+		"workspace":  map[string]any{"type": "string", "description": "Optional active workspace name or id."},
+		"repository": map[string]any{"type": "string", "description": "Optional repository identifier for multi-repo workspaces."},
+		"path":       map[string]any{"type": "string", "description": "Optional workspace-relative file path."},
+		"cached":     map[string]any{"type": "boolean", "description": "Include staged changes only when true."},
+	}),
 	dashboardRuntimeTool("list_project_files", "List files in the active CodeLocal project runtime.", map[string]any{
 		"workspace": map[string]any{"type": "string", "description": "Optional workspace/project name or id."},
 		"path":      map[string]any{"type": "string", "description": "Optional workspace-relative directory."},
@@ -139,6 +150,10 @@ func dashboardRuntimeToolSpec(name string, args map[string]any) (runtimeTool str
 		}
 	}
 	switch name {
+	case "get_project_git_status":
+		return "git_status", false, forward, true
+	case "review_project_diff":
+		return "git_diff", false, forward, true
 	case "list_project_files":
 		return "list_files", false, forward, true
 	case "read_project_file":
@@ -170,6 +185,16 @@ func dashboardRuntimeToolSpec(name string, args map[string]any) (runtimeTool str
 }
 
 func dashboardResolveRuntimeWorkspace(r *http.Request, s *Server, userID string, args map[string]any) (*gateway.WorkspaceView, error) {
+	// A task bound to a project must never silently hop to another workspace
+	// because the LLM provided a different optional tool argument.
+	if state := dashboardExecutionStateFromRequest(r); state != nil && state.workspace != nil {
+		requested, _ := args["workspace"].(string)
+		requested = strings.TrimSpace(requested)
+		if requested != "" && dashboardChatFindWorkspace([]gateway.WorkspaceView{*state.workspace}, requested) == nil {
+			return nil, fmt.Errorf("workspace locked to active task; start a new task to change project")
+		}
+		return state.workspace, nil
+	}
 	if s.Workspaces == nil {
 		return nil, fmt.Errorf("workspace service unavailable")
 	}
@@ -450,6 +475,27 @@ func execDashboardRuntimeTool(r *http.Request, s *Server, userID, name string, a
 				if activeID == processID {
 					delete(state.activeCommands, key)
 				}
+			}
+		}
+	}
+	if name == "review_project_diff" {
+		// Git output can be arbitrarily large. Bound the LLM/SSE/persistence payload,
+		// and explicitly tell the client when a file-scoped follow-up is required.
+		if gitResult, ok := result.Result.(map[string]any); ok {
+			diff, _ := gitResult["diff"].(string)
+			const maxGitDiffBytes = 64 * 1024
+			truncated := len(diff) > maxGitDiffBytes
+			if truncated {
+				end := maxGitDiffBytes
+				for end > 0 && !utf8.ValidString(diff[:end]) {
+					end--
+				}
+				diff = diff[:end]
+			}
+			result.Result = map[string]any{
+				"diff": diff, "truncated": truncated,
+				"repositoryCount":     gitResult["repositoryCount"],
+				"changedRepositories": gitResult["changedRepositories"],
 			}
 		}
 	}

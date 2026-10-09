@@ -8,14 +8,14 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test:ui": "node src/lib/i18n/i18n.test.mjs && node src/app/blog/blog-i18n.test.mjs && node src/app/dashboard/dashboard-i18n.test.mjs && node src/lib/media-upload.test.mjs && node src/app/interface-layout.test.mjs",
+    "test:ui": "node src/lib/i18n/i18n.test.mjs && node src/app/blog/blog-i18n.test.mjs && node src/app/dashboard/dashboard-i18n.test.mjs && node src/lib/media-upload.test.mjs && node src/app/interface-layout.test.mjs && node --experimental-strip-types src/app/dashboard/chat-tool-output.test.mjs && node --experimental-strip-types src/app/dashboard/chat-queue.test.mjs",
     "check": "npm run lint && npm run typecheck && npm run test:ui && npm run build"
   },
   "engines": {
     "node": "^22.13.0 || >=24.0.0"
   },
   "dependencies": {
-    "next": "16.3.4",
+    "next": "^16.4.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-markdown": "^10.1.0",
@@ -26,7 +26,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.3.4",
+    "eslint-config-next": "^16.4.0",
     "typescript": "^5"
   }
 }
