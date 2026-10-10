@@ -58,6 +58,14 @@ Build a dependable browser Coding Agent comparable in day-to-day interaction to 
 - **Release blockers:** authenticated browser E2E not available in this session; durable server-owned task jobs/replay/cancel, concurrent worktrees, per-action scoped approvals and full diff revert UI remain incomplete. No production deployment or merge.
 - **Concurrent workspace changes:** `docs/plans/product/dashboard-chat.md` and `docs/plans/product/GOAT_AUTONOMOUS_MODE.md` appeared from separate work, exclude them from this increment's staging/commit.
 
+## UI/UX refinement — October 10, 2026
+- **Case A — blank/new task:** the initial screen has a restrained CodeLocal hero and three readable coding-action cards; selecting a card fills the composer and focuses it without automatically sending or performing a mutation.
+- **Case B — active thread:** sender identity is distinct from the message content; tool timelines, skill badges, markdown, diffs and approvals retain their original functionality. Conversation width, spacing and typography favor scanning longer coding results rather than chat bubbles.
+- **Case C — mobile/narrow desktop:** suggestion cards become a one-column action list, narrow desktop controls truncate rather than overlapping, mobile composer retains virtual-keyboard/safe-area behavior and 16px input to avoid iOS zoom. Keep 44px touch targets for existing mobile actions and visible keyboard focus.
+- **Implementation:** `web/src/app/dashboard/dashboard-chat.tsx` and `dashboard-chat.module.css`; no authorization, protocol, storage, execution mode, or model-routing changes in this visual pass.
+- **Verification:** `git diff --check`, UI localization/source suite, TypeScript typecheck, web ESLint, Next.js production build, and production dependency audit passed (0 production vulnerabilities). The pre-existing `social-card.tsx` image lint warning remains.
+- **Not yet verified:** real authenticated desktop/mobile browser screenshots and hands-on streamed-Agent E2E. This incremental visual pass stays on the feature branch; no merge/deploy until the release gate is satisfied.
+
 ## Implementation tracking
 - Source audit found `/chat` has blocking ConstructionNotice, history clear mutates state before server confirmation, non-plugin approval offers Full access, runtime supports `git_status` and `git_diff` but Chat wrapper does not currently offer them.
 - First increment limits scope to honest UX and reuse existing read-only tools. Durable jobs/worktree isolation are separate follow-on increments requiring transport + persistence design, not simulated client-side.

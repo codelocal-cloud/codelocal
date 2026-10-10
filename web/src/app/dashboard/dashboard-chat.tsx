@@ -1537,16 +1537,27 @@ export function DashboardChat() {
         <div ref={messagesRef} className={styles.chatMessages} onPaste={onPaste} onScroll={updateScrollFollow}>
           {historyLoading ? <div className={styles.historyLoading}>{t("Loading conversation…")}</div> : messages.length === 0 ? (
             <div className={styles.emptyState}>
-              <span className={styles.emptyOrb} aria-hidden="true"><AppIcon name="codelocal" size={27} /></span>
+              <span className={styles.emptyOrb} aria-hidden="true"><AppIcon name="codelocal" size={30} /></span>
+              <span className={styles.emptyEyebrow}>{t("New task")}</span>
               <strong>{t("Start a task")}</strong>
               <p>{t("Describe what needs to be done. CodeLocal will read the project, execute the task, and verify the result.")}</p>
-              <div className={styles.suggestions}>
-                {suggestions.map((suggestion) => <button key={suggestion} type="button" onClick={() => setInput(t(suggestion))}>{t(suggestion)}</button>)}
+              <div className={styles.suggestions} aria-label={t("Start a task")}>
+                {suggestions.map((suggestion, index) => (
+                  <button key={suggestion} type="button" onClick={() => { setInput(t(suggestion)); composerRef.current?.focus(); }}>
+                    <span className={styles.suggestionIcon}><AppIcon name={index === 0 ? "code" : index === 1 ? "search" : "check"} size={18} /></span>
+                    <span className={styles.suggestionText}>{t(suggestion)}</span>
+                    <AppIcon name="chevron-right" size={16} className={styles.suggestionArrow} />
+                  </button>
+                ))}
               </div>
             </div>
           ) : messages.map((message, index) => (
             <div key={`${message.role}-${index}`} className={`${styles.msgBlock} ${message.role === "user" ? styles.userBlock : styles.assistantBlock}`}>
               <div className={styles.messageBody}>
+                <div className={styles.messageMeta}>
+                  <span className={styles.messageOriginIcon} aria-hidden="true"><AppIcon name={message.role === "assistant" ? "codelocal" : "user"} size={13} /></span>
+                  <span>{t(message.role === "assistant" ? "CodeLocal" : "You")}</span>
+                </div>
                 {message.skills?.length ? (
                   <div className={skillStyles.list} aria-label={t("Skills used by CodeLocal")}>
                     {message.skills.map((skill) => (
